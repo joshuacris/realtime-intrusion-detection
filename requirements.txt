@@ -1,0 +1,21 @@
+# Data
+numpy
+pandas
+
+# ML models
+scikit-learn
+xgboost
+shap
+tensorflow
+keras
+
+# Visualization
+matplotlib
+seaborn
+plotly
+
+# Notebook
+jupyter
+ipykernel
+
+joblib
