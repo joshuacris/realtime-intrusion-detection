@@ -107,6 +107,7 @@ long read_pcap(const char* path,
         if (ihl < 20) continue;                       // malformed: header too small
 
         uint16_t total_len = read_be16(ip + 2);       // size of whole IP datagram
+        uint8_t  ttl       = ip[8];                    // hops remaining (feeds sttl/dttl)
         uint8_t  proto     = ip[9];                   // what's inside: 1=ICMP 6=TCP 17=UDP
         uint32_t src_ip    = read_be32(ip + 12);      // who is talking...
         uint32_t dst_ip    = read_be32(ip + 16);      // ...to whom (core of IDS)
@@ -119,6 +120,7 @@ long read_pcap(const char* path,
         uint32_t l4_offset = static_cast<uint32_t>(l4 - data);  // bytes consumed so far
         uint16_t src_port = 0, dst_port = 0;
         uint8_t  tcp_flags = 0;
+        uint16_t tcp_window = 0;
         uint32_t l4_hdr_len = 0;
 
         if (proto == IP_PROTO_TCP) {
@@ -133,6 +135,8 @@ long read_pcap(const char* path,
             //   SYN(0x02)->SYN-ACK(0x12)->ACK(0x10) is a healthy 3-way handshake;
             //   a flood of lone SYNs = SYN-flood DoS; RST bursts = port scanning.
             tcp_flags  = l4[13];
+            // Bytes 14-15 = advertised receive window (flow-control buffer size).
+            tcp_window = read_be16(l4 + 14);
         } else if (proto == IP_PROTO_UDP) {
             // UDP: connectionless. No handshake, no flags, header is ALWAYS
             // exactly 8 bytes (no options) -- so we hardcode 8 here.
@@ -156,6 +160,8 @@ long read_pcap(const char* path,
         pkt.dst_port     = dst_port;
         pkt.proto        = proto;
         pkt.tcp_flags    = tcp_flags;
+        pkt.ttl          = ttl;
+        pkt.tcp_window   = tcp_window;
         pkt.timestamp_us = static_cast<uint64_t>(header->ts.tv_sec) * 1000000ULL
                          + static_cast<uint64_t>(header->ts.tv_usec);
 
