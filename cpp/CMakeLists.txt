@@ -38,9 +38,13 @@ find_package(nlohmann_json REQUIRED)
 
 # --- Build targets ---
 
-# Create an executable called "flow_extractor" from src/main.cpp.
-# Equivalent to: clang++ src/main.cpp -o flow_extractor ...
-add_executable(flow_extractor src/main.cpp)
+# Create an executable called "flow_extractor" from our source files.
+# Every .cpp (translation unit) gets compiled separately, then linked.
+# Headers (.h) are NOT listed here — they're pulled in via #include.
+add_executable(flow_extractor
+  src/main.cpp
+  src/pcap_reader.cpp
+)
 
 # Tell the compiler where to find header files for this target.
 # Equivalent to: -I/opt/homebrew/Cellar/libpcap/.../include
