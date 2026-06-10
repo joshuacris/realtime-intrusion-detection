@@ -162,6 +162,7 @@ long read_pcap(const char* path,
         pkt.tcp_flags    = tcp_flags;
         pkt.ttl          = ttl;
         pkt.tcp_window   = tcp_window;
+        pkt.ip_total_len = total_len;
         pkt.timestamp_us = static_cast<uint64_t>(header->ts.tv_sec) * 1000000ULL
                          + static_cast<uint64_t>(header->ts.tv_usec);
 

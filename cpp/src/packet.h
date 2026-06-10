@@ -18,4 +18,5 @@ struct Packet {
     uint16_t tcp_window;    // TCP advertised window (feeds swin/dwin; 0 if not TCP)
     uint64_t timestamp_us;  // capture time, microseconds since epoch
     uint32_t payload_len;   // application-layer bytes (excludes all headers)
+    uint32_t ip_total_len;  // whole IP datagram size (feeds sbytes/dbytes)
 };

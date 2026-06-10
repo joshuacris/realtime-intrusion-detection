@@ -37,22 +37,31 @@ Live traffic (pcap / UNSW-NB15 replay)
 
 ### Tasks
 
-- [ ] **1.1** Set up a `cpp/` directory with a CMake build system
+- [x] **1.1** Set up a `cpp/` directory with a CMake build system ✅ DONE
   - Dependencies: `libpcap`, `librdkafka` (for later), `nlohmann/json`
   - Use `vcpkg` or `conan` for dependency management
 
-- [ ] **1.2** Write a pcap replay tool (`pcap_replay.cpp`)
-  - Reads UNSW-NB15 raw pcap files (if available) OR replays the CSV as simulated packets
-  - Emits packet structs: `{src_ip, dst_ip, src_port, dst_port, proto, timestamp, payload_len, flags}`
+- [x] **1.2** Write a pcap reader (`pcap_reader.cpp`) ✅ DONE
+  - Reads UNSW-NB15 raw pcap files (we have `data/1.pcap`, 954MB, Linux SLL link type)
+  - Emits packet structs: `{src_ip, dst_ip, src_port, dst_port, proto, timestamp, payload_len, flags, ttl, tcp_window}`
 
-- [ ] **1.3** Write a flow aggregator (`flow_aggregator.cpp`)
+- [ ] **1.3** Write a flow aggregator (`flow_aggregator.cpp`) — IN PROGRESS
   - Groups packets into bidirectional flows (5-tuple key: src/dst IP, src/dst port, proto)
-  - Computes the 49 UNSW-NB15 features per flow:
+  - **Scope (revised):** compute the **40 raw features the trained model uses** (not the original 49 — labels & original-only fields excluded). See Progress Log + feature tiers below.
     - Duration, byte counts (`sbytes`, `dbytes`), packet counts (`spkts`, `dpkts`)
     - Service detection (HTTP, FTP, DNS, etc.)
     - TCP flags (SYN, FIN, RST counts)
     - Load, loss, jitter features
-  - Exports completed flows as JSON or protobuf
+  - Exports completed flows as JSON
+  - **Sub-steps:**
+    - [x] **1.3a** Extend `Packet` with `ttl` + `tcp_window` ✅ DONE
+    - [x] **1.3b** Define `FlowKey` (canonical 5-tuple) + `FlowState` + hash functor (`flow.h`) ✅ DONE
+    - [x] **1.3c** Aggregator loop: group packets → flows (counts/bytes/timestamps) ✅ DONE
+    - [x] **1.3d** Flow termination (FIN/RST/timeout) + emit completed flows as JSON ✅ DONE
+    - [x] **1.3e** Derived features: loads, means, rate, jitter, interpkt, handshake RTT ✅ DONE
+    - [ ] **1.3f** TCP state machine + port→service map
+    - [ ] **1.3g** Sliding-window `ct_*` family (recent-flow buffer)
+    - [ ] **1.3h** DPI stubs (HTTP/FTP features → 0 for now)
 
 - [ ] **1.4** Validate output against `data/processed/training_full.csv`
   - Run the C++ extractor on the raw UNSW-NB15 CSVs and diff features against the preprocessed output
@@ -207,3 +216,104 @@ Live traffic (pcap / UNSW-NB15 replay)
 | Container orchestration | `Kubernetes` + `Helm` + `KEDA` |
 | CI/CD | GitHub Actions |
 | Local k8s | `minikube` or `kind` |
+
+---
+
+## Progress Log
+
+Durable record of what's been built (in case chat logs are lost). Newest first.
+
+### 2026-06-09 — Task 1.3e: derived features
+- Added 12 derived features to the JSON output (now **26 fields/flow**):
+  - Ratios (from counters): `smean`, `dmean`, `sload`/`dload` (bits/s), `rate` (pkts/s).
+  - Timing (new per-direction state in [flow.h](cpp/src/flow.h) FlowState):
+    `sinpkt`/`dinpkt` (mean gap, ms), `sjit`/`djit` (jitter = mean |Δgap|, ms).
+  - Handshake (SYN / SYN-ACK / ACK timestamps): `synack`, `ackdat`, `tcprtt` (s).
+- [flow_aggregator.cpp](cpp/src/flow_aggregator.cpp) maintains inter-arrival,
+  jitter, and handshake-timestamp accumulators in `add_packet`; computation done
+  at emit time in [flow_json.h](cpp/src/flow_json.h). All divisions guarded.
+- **Validated** the math against a real HTTP flow (smean/sload/rate/tcprtt all
+  matched hand calc). 17,662/40,666 flows have a full handshake; median
+  tcprtt 0.72 ms. Run unchanged: 1.8M pkts → 40,666 flows in ~1.9s.
+
+### 2026-06-09 — Task 1.3d: flow termination + JSON export
+- `FlowAggregator` now takes a `FlowSink` callback + idle timeout (default 60s).
+  Flows complete on: TCP **RST** (either side), TCP **FIN on both sides**, or
+  **idle timeout** (periodic sweep, every 500k pkts), and `flush()` emits all
+  remaining flows at EOF. Emitted via sink, then erased (bounds memory for the
+  live stream).
+- New [cpp/src/flow_json.h](cpp/src/flow_json.h): `flow_to_json()` →
+  nlohmann::json with UNSW field names (srcip/sport/dstip/dsport/proto/dur/
+  spkts/dpkts/sbytes/dbytes/sttl/dttl/swin/dwin). [main.cpp](cpp/src/main.cpp)
+  writes **JSON Lines** to `flows.jsonl` (or argv[2]).
+- TCP flag constants added to [flow.h](cpp/src/flow.h). `*.jsonl` gitignored.
+- Added `CMAKE_EXPORT_COMPILE_COMMANDS ON` → build/compile_commands.json (fixes
+  VS Code IntelliSense header resolution; user points c_cpp_properties at it).
+- **Result on `data/1.pcap`:** 1,800,166 pkts → **40,666 flows** in ~1.9s, all
+  valid JSON. (Count rose from 22,969 in 1.3c because terminating flows now
+  splits reused 5-tuples into separate connections — correct NIDS behavior.)
+  Breakdown: tcp 35,334 · udp 5,330 · icmp 2; 226 no-reply (scan-like) flows.
+
+### 2026-06-08 — Task 1.3c: aggregator loop
+- New [cpp/src/flow_aggregator.h](cpp/src/flow_aggregator.h) +
+  [.cpp](cpp/src/flow_aggregator.cpp): `FlowAggregator` **class** (private
+  `unordered_map<FlowKey,FlowState,FlowKeyHash>`, exposed via `add_packet()`,
+  `flow_count()`, `flows()`). `add_packet` get-or-creates the FlowState via
+  `flows_[key]` (reference), sets the source/initiator on the first packet, then
+  splits each packet into s*/d* counters by direction.
+- Added `ip_total_len` to `Packet` (IP datagram bytes) → used for sbytes/dbytes.
+  (Byte semantics = IP-layer bytes; may revisit vs Argus for exactness, fine for
+  model-input matching.)
+- [main.cpp](cpp/src/main.cpp) now streams packets into the aggregator and prints
+  a sample of flows (structured-binding loop).
+- **Result on `data/1.pcap`:** 1,800,166 packets → **22,969 flows** in ~1.1s.
+  Bidirectional grouping verified (one flow holds both spkts & dpkts);
+  attack flows visible (e.g. 175.45.176.3 → spkts=2/dpkts=0, no reply = scan).
+
+### 2026-06-08 — Task 1.3a + 1.3b: flow types
+- **1.3a:** Added `ttl` (IP header byte 8) and `tcp_window` (TCP bytes 14–15) to
+  `Packet` in [cpp/src/packet.h](cpp/src/packet.h); populated in
+  [cpp/src/pcap_reader.cpp](cpp/src/pcap_reader.cpp). These feed sttl/dttl/swin/dwin.
+- **1.3b:** New [cpp/src/flow.h](cpp/src/flow.h) defining:
+  - `FlowKey` — canonical (direction-independent) 5-tuple + `operator==`;
+    `make_flow_key()` orders endpoints (smaller first) so A→B and B→A collapse
+    to one key. Verified: both directions hash to the same bucket (map size 1).
+  - `FlowKeyHash` — hash functor using the hash_combine (golden-ratio) recipe.
+  - `FlowState` — running per-flow accumulators (init_ip/port, first/last ts,
+    s/d pkts, s/d bytes, sttl/dttl, swin/dwin, s/d flag OR) + `is_from_source()`.
+- Builds clean. flow.h validated via throwaway include + `clang++`.
+
+### 2026-06-07 — Task 1.2: pcap reader
+- Built [cpp/src/pcap_reader.cpp](cpp/src/pcap_reader.cpp) (+`.h`) and
+  [cpp/src/packet.h](cpp/src/packet.h): opens a pcap with libpcap, detects link
+  type (our capture is **Linux SLL / 16-byte header**, not Ethernet), peels
+  SLL → IPv4 → TCP/UDP/ICMP by hand, emits `Packet` structs via a
+  `std::function` callback.
+- Driver [cpp/src/main.cpp](cpp/src/main.cpp) takes a pcap path, counts packets.
+- **Result on `data/1.pcap`:** parsed **1,800,166 packets in ~1.6s** (~1.1M
+  pkts/sec, 1 core). TCP 1,772,972 · UDP 27,125 · ICMP 69.
+- **Validated against `tcpdump`:** skipped protocols (OSPF, ARP) and ICMP length
+  (336B) match exactly. Traffic is real UNSW-NB15 (attacker 175.45.176.0 →
+  victim 149.171.126.x).
+
+### 2026-06-07 — Task 1.1: build system
+- Created `cpp/` with [CMakeLists.txt](cpp/CMakeLists.txt) (CMake + vcpkg
+  toolchain) and [vcpkg.json](cpp/vcpkg.json) (deps: `nlohmann-json`; libpcap via
+  Homebrew). Target `flow_extractor`. C++17, `-Wall -Wextra`.
+- vcpkg installed at `~/Desktop/vcpkg`. Build: `cmake -B build -S .
+  -DCMAKE_TOOLCHAIN_FILE=$VCPKG_ROOT/scripts/buildsystems/vcpkg.cmake` then
+  `cmake --build build`.
+- Added [.gitignore](.gitignore): ignores `cpp/build/`, data/`*.pcap`, ML
+  artifacts, and the two personal notes files (CPP_TAKEAWAYS.md,
+  NETWORKING_TAKEAWAYS.md).
+
+### Feature scope decision (2026-06-07)
+- Flow extractor targets the **40 raw features the trained model consumes**
+  (→ 58 cols after OHE/scaling in Phase 2), NOT the original UNSW-NB15 49.
+  Priority = match model inputs, not byte-exact UNSW CSV.
+- Excluded (not derivable from pcap): `attack_cat`, `Label` (Label = model's
+  output), and original-only fields already dropped by `preprocessing.py`
+  (srcip/sport/dstip/dsport, Stime/Ltime, stcpb, dtcpb, id).
+- Feature tiers — Header(6) & Aggregate(10): exact · Timing(7): computable ·
+  TCP-semantics(4: state/service/sloss/dloss): approx · HTTP-FTP DPI(5): stub
+  to 0 first · Sliding-window ct_*(8): recent-flow buffer.

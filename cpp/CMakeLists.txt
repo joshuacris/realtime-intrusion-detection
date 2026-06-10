@@ -10,6 +10,11 @@ project(intrusion_detection CXX)
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
+# Emit build/compile_commands.json — a machine-readable index of how each file
+# is compiled (incl. all -I include paths). VS Code's C++ extension reads it to
+# resolve headers like <nlohmann/json.hpp>, fixing IntelliSense squiggles.
+set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
+
 # Enable useful warnings — same as -Wall -Wextra in a raw compile command
 add_compile_options(-Wall -Wextra)
 
@@ -44,6 +49,7 @@ find_package(nlohmann_json REQUIRED)
 add_executable(flow_extractor
   src/main.cpp
   src/pcap_reader.cpp
+  src/flow_aggregator.cpp
 )
 
 # Tell the compiler where to find header files for this target.

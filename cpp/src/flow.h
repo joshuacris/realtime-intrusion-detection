@@ -5,6 +5,13 @@
 #include <cstddef>
 #include <functional>   // std::hash
 
+// TCP control-flag bit masks (byte 13 of the TCP header). Used to detect
+// connection teardown: RST = abrupt reset, FIN = graceful close.
+static constexpr uint8_t TCP_FIN = 0x01;
+static constexpr uint8_t TCP_SYN = 0x02;
+static constexpr uint8_t TCP_RST = 0x04;
+static constexpr uint8_t TCP_ACK = 0x10;
+
 // ===================================================================
 // FlowKey — the identity of a single conversation (a "flow").
 //
@@ -127,6 +134,20 @@ struct FlowState {
     // --- accumulated TCP flags per direction (for state / loss later) ---
     uint8_t  s_flags = 0;   // OR of all source->dest TCP flags
     uint8_t  d_flags = 0;   // OR of all dest->source TCP flags
+
+    // --- inter-arrival + jitter accumulation, per direction ---
+    // (sinpkt/dinpkt = mean gap between packets; sjit/djit = mean change in gap)
+    uint64_t s_last_ts   = 0;   // timestamp of previous source-side packet
+    uint64_t d_last_ts   = 0;   // timestamp of previous dest-side packet
+    double   s_intpkt_sum = 0;  uint64_t s_intpkt_n = 0;  // sum & count of source gaps
+    double   d_intpkt_sum = 0;  uint64_t d_intpkt_n = 0;
+    double   s_prev_int  = 0;   double s_jit_sum = 0;  uint64_t s_jit_n = 0;
+    double   d_prev_int  = 0;   double d_jit_sum = 0;  uint64_t d_jit_n = 0;
+
+    // --- TCP 3-way handshake timestamps (synack / ackdat / tcprtt) ---
+    uint64_t syn_ts    = 0;  bool has_syn    = false;  // pure SYN (source)
+    uint64_t synack_ts = 0;  bool has_synack = false;  // SYN+ACK (dest)
+    uint64_t ack_ts    = 0;  bool has_ack    = false;  // final ACK (source)
 
     // Helper: is this packet flowing from the initiator (source) side?
     bool is_from_source(const Packet& p) const {

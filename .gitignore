@@ -2,6 +2,9 @@
 cpp/build/
 cpp/vcpkg_installed/
 
+# ── Flow extractor output ──────────────────────────────────────────
+*.jsonl
+
 # ── Python ─────────────────────────────────────────────────────────
 __pycache__/
 *.pyc
@@ -35,3 +38,4 @@ data/
 # ── Personal notes ─────────────────────────────────────────────────
 cpp/CPP_TAKEAWAYS.md
 cpp/NETWORKING_TAKEAWAYS.md
+PLAN.md
