@@ -20,10 +20,11 @@ KafkaProducer::KafkaProducer(const std::string& brokers, const std::string& topi
     if (conf->set("dr_cb", &dr_, errstr) != RdKafka::Conf::CONF_OK)
         throw std::runtime_error("kafka dr_cb: " + errstr);
 
-    // Throughput tuning: gather messages for up to 10ms into batches up to 1MB
-    // before shipping. (Compression added later in 2.5 — needs a codec lib.)
-    conf->set("linger.ms",  "10",      errstr);
-    conf->set("batch.size", "1048576", errstr);   // 1 MiB
+    // Throughput tuning: gather messages for up to 10ms into batches up to 1MB,
+    // then ship them lz4-compressed (smaller on wire+disk for a little CPU).
+    conf->set("linger.ms",       "10",      errstr);
+    conf->set("batch.size",      "1048576", errstr);   // 1 MiB
+    conf->set("compression.type","lz4",     errstr);   // codec bundled by vcpkg
 
     // Create the producer. Returns nullptr on failure (note: this does NOT
     // connect yet — connection is lazy; a down broker shows up as failed

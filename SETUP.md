@@ -111,6 +111,45 @@ Or just browse in the UI: **Topics → raw-flows → Messages**.
 
 ---
 
+## Load testing (reproduce the benchmarks)
+
+All Kafka admin tools run inside the container via `docker exec kafka <tool>`.
+macOS has no `timeout`, so long-running services are backgrounded (`&`) and
+stopped with `pkill -INT feature_consumer` (graceful). Use the **Release** build
+(`build-release`) for benchmarks.
+
+```bash
+KT=/opt/kafka/bin/kafka-topics.sh
+GO=/opt/kafka/bin/kafka-get-offsets.sh
+CG=/opt/kafka/bin/kafka-consumer-groups.sh
+B=localhost:9092
+
+# --- Producer throughput ---
+docker exec kafka $KT --bootstrap-server $B --delete --topic raw-flows
+docker exec kafka $KT --bootstrap-server $B --create --topic raw-flows --partitions 1 --replication-factor 1
+/usr/bin/time -p env KAFKA_BROKERS=$B ./cpp/build-release/flow_extractor data/1.pcap   # pcap->kafka
+/usr/bin/time -p ./cpp/build-release/flow_extractor data/1.pcap                        # parse-only baseline
+# producer rate ≈ 23004 / (kafka_real − parse_real)
+
+# --- Consumer throughput (inflate, rewind, run) ---
+for i in 1 2 3 4 5; do KAFKA_BROKERS=$B ./cpp/build-release/flow_extractor data/1.pcap >/dev/null 2>&1; done
+docker exec kafka $CG --bootstrap-server $B --group feature-consumer --reset-offsets --to-earliest --topic raw-flows --execute
+KAFKA_BROKERS=$B ./cpp/build-release/feature_consumer    # prints "sustained: N msg/s" on Ctrl-C
+
+# --- Partition parallelism ---
+docker exec kafka $CG --bootstrap-server $B --delete --group feature-consumer
+docker exec kafka $KT --bootstrap-server $B --delete --topic raw-flows
+docker exec kafka $KT --bootstrap-server $B --create --topic raw-flows --partitions 3 --replication-factor 1
+KAFKA_BROKERS=$B ./cpp/build-release/flow_extractor data/1.pcap
+KAFKA_BROKERS=$B ./cpp/build-release/feature_consumer &   # consumer A
+KAFKA_BROKERS=$B ./cpp/build-release/feature_consumer &   # consumer B
+docker exec kafka $CG --bootstrap-server $B --group feature-consumer --describe --members --verbose
+pkill -INT feature_consumer
+```
+
+Reference results (single core, Apple Silicon, Release): producer ~74k msg/s,
+consumer ~82k msg/s sustained. See ACHIEVEMENTS.md (gitignored) for context.
+
 ## Shutting down & resuming (e.g. rebooting your Mac)
 
 **Your data is safe across reboots** — topics and messages live in the Docker

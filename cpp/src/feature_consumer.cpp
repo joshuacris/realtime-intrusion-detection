@@ -4,6 +4,7 @@
 
 #include <nlohmann/json.hpp>
 #include <atomic>
+#include <chrono>
 #include <csignal>
 #include <cstdio>
 #include <cstdlib>
@@ -30,6 +31,11 @@ int main() {
            "(broker %s)\n", brokers.c_str());
 
     long processed = 0, errors = 0;
+    // Timer for sustained throughput: measured between the FIRST and LAST
+    // processed message, so trailing idle time doesn't dilute the rate.
+    using clk = std::chrono::steady_clock;
+    clk::time_point t_first, t_last;
+
     while (g_running) {
         // Wait up to 500ms for the next flow. nullopt = nothing right now;
         // loop again (and re-check g_running so Ctrl-C is responsive).
@@ -53,8 +59,15 @@ int main() {
             // Key by source IP (same partitioning choice as the extractor).
             producer.send(out["srcip"].get<std::string>(), out.dump());
             processed++;
-            if (processed % 5000 == 0)
-                printf("  processed %ld flows...\n", processed);
+
+            auto now = clk::now();
+            if (processed == 1) t_first = now;   // start clock on first message
+            t_last = now;
+            if (processed % 5000 == 0) {
+                double s = std::chrono::duration<double>(t_last - t_first).count();
+                printf("  processed %ld (%.0f msg/s)\n",
+                       processed, s > 0 ? processed / s : 0.0);
+            }
         } catch (const std::exception& e) {
             // A malformed message shouldn't kill the service — skip and count.
             errors++;
@@ -62,7 +75,11 @@ int main() {
         }
     }
 
+    double active_s = (processed > 0)
+        ? std::chrono::duration<double>(t_last - t_first).count() : 0.0;
     printf("\nshutting down: processed %ld, errors %ld\n", processed, errors);
+    if (active_s > 0)
+        printf("sustained: %.3fs active = %.0f msg/s\n", active_s, processed / active_s);
     producer.flush();   // make sure queued outputs are delivered
     consumer.close();   // commit final offsets, leave the group
     printf("kafka delivered: %llu  failed: %llu\n",
