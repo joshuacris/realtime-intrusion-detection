@@ -100,10 +100,19 @@ Live traffic (pcap / UNSW-NB15 replay)
     `raw-flows:0:23004` offset confirms all landed; sample message valid.
   - TODO (2.5 tuning): enable lz4/snappy compression (lz4 already built).
 
-- [ ] **2.4** Write a Kafka consumer in C++ (`feature_consumer.cpp`)
-  - Consumes from `raw-flows`
-  - Applies the same log-transform and encoding as `src/preprocessing/preprocessing.py`
-  - Publishes model-ready feature vectors to an inference request queue
+- [x] **2.4** Write a Kafka consumer in C++ (`feature_consumer.cpp`) ✅ DONE
+  - Consumes `raw-flows` (group `feature-consumer`, auto.offset.reset=earliest,
+    auto-commit → crash-resumable). New RAII `kafka_consumer.{h,cpp}`.
+  - Encodes each flow to the model's 58-feature vector (21 one-hot + 37 RAW
+    numerics) via `feature_schema.h` — the single source of truth for feature
+    ORDER (Phase 3 ONNX export must reuse it). NOTE: tree model uses RAW
+    numerics, so NO scale/log here (that's the LR/MLP path only).
+  - Publishes `{5-tuple + features[]}` to new topic `model-ready-features`.
+  - Graceful shutdown on SIGINT/SIGTERM (std::atomic flag); per-message
+    try/catch so one bad message can't kill the service.
+  - **Verified:** drained 23,004 → 23,004 delivered/0 failed/0 errors;
+    sample vector = 58 wide, each one-hot group sums to 1, decodes to
+    tcp/http/FIN, numerics match source flow.
 
 - [ ] **2.5** Load test the pipeline
   - Replay the 163K UNSW-NB15 records as fast as possible
@@ -260,6 +269,22 @@ resume-driven dead weight. Slots in after Phase 3 (needs a baseline to compare).
 ## Progress Log
 
 Durable record of what's been built (in case chat logs are lost). Newest first.
+
+### 2026-06-20 — Phase 2.4: feature consumer (preprocessing service)
+- New topic `model-ready-features` (added to `infra/create-topics.sh`).
+- New `cpp/src/kafka_consumer.{h,cpp}`: RAII consumer wrapper (group.id,
+  subscribe, poll→optional<string>, auto.offset.reset=earliest, auto-commit,
+  close()).
+- New `cpp/src/feature_schema.h`: canonical 58-feature contract (21 one-hot +
+  37 raw numerics, alphabetical order matching preprocessing.py) +
+  `to_feature_vector()`. **Single source of truth for feature order** — Phase 3
+  ONNX export reuses it. Tree model → raw numerics, no scale/log.
+- New `cpp/src/feature_consumer.cpp` (2nd executable): consume raw-flows →
+  encode → produce model-ready-features. Signal-handled graceful shutdown,
+  per-message try/catch resilience. Shares kafka_{producer,consumer}.cpp.
+- **Pipeline now end-to-end:** extractor → raw-flows → feature_consumer →
+  model-ready-features. Verified 23,004 flows through both hops, feature
+  vectors structurally + semantically correct.
 
 ### 2026-06-20 — Phase 2.1–2.3: Kafka streaming online
 - **2.1** `infra/docker-compose.yml`: single-node Kafka in **KRaft** mode (no

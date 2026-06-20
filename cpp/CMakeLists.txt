@@ -69,3 +69,15 @@ target_link_libraries(flow_extractor PRIVATE
   nlohmann_json::nlohmann_json
   RdKafka::rdkafka++
 )
+
+# Second executable: the feature consumer (reads raw-flows, encodes, publishes
+# model-ready-features). Shares the Kafka wrappers; needs no libpcap.
+add_executable(feature_consumer
+  src/feature_consumer.cpp
+  src/kafka_consumer.cpp
+  src/kafka_producer.cpp
+)
+target_link_libraries(feature_consumer PRIVATE
+  nlohmann_json::nlohmann_json
+  RdKafka::rdkafka++
+)

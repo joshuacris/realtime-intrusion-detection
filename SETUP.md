@@ -59,6 +59,19 @@ KAFKA_BROKERS=localhost:9092 ./build/flow_extractor ../data/1.pcap flows.jsonl
 - 2nd arg = optional output file. `KAFKA_BROKERS` env = optional Kafka output.
 - Kafka must be running first (see below) and the topics must exist.
 
+## Run the feature consumer
+
+A long-running service that reads `raw-flows`, encodes each flow into the model's
+58-feature input vector, and publishes to `model-ready-features`.
+
+```bash
+KAFKA_BROKERS=localhost:9092 ./cpp/build/feature_consumer
+```
+- Runs until you stop it with **Ctrl-C** (graceful: flushes + commits offsets).
+- First run (new consumer group) processes all existing messages; later runs
+  resume from the last committed offset.
+- Watch its consumer group + lag in the UI under **Consumers**.
+
 ---
 
 ## Kafka (Docker Compose)

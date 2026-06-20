@@ -17,6 +17,12 @@ docker exec kafka "$KT" --bootstrap-server "$BROKER" --create --if-not-exists \
   --topic raw-flows --partitions 1 --replication-factor 1 \
   --config retention.ms="$RETENTION_MS"
 
+# model-ready-features: the feature consumer publishes encoded feature vectors
+# here; the inference server (Phase 3) consumes them.
+docker exec kafka "$KT" --bootstrap-server "$BROKER" --create --if-not-exists \
+  --topic model-ready-features --partitions 1 --replication-factor 1 \
+  --config retention.ms="$RETENTION_MS"
+
 # scored-flows: the inference service will publish {flow + prediction} here (Phase 3).
 docker exec kafka "$KT" --bootstrap-server "$BROKER" --create --if-not-exists \
   --topic scored-flows --partitions 1 --replication-factor 1 \
