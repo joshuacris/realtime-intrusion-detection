@@ -81,18 +81,24 @@ Live traffic (pcap / UNSW-NB15 replay)
 
 ### Tasks
 
-- [ ] **2.1** Spin up Kafka locally via Docker Compose
-  - Services: Zookeeper, Kafka broker, Kafka UI (for visibility)
-  - File: `infra/docker-compose.yml`
+- [x] **2.1** Spin up Kafka locally via Docker Compose ✅ DONE
+  - KRaft mode (NO ZooKeeper — modern single-node). Services: kafka broker +
+    kafka-ui. File: `infra/docker-compose.yml`. UI at http://localhost:8080.
+  - 1 broker (fault tolerance needs multiple MACHINES — N/A on one laptop;
+    scaling story is consumer-side via partitions, not brokers).
 
-- [ ] **2.2** Create two Kafka topics
-  - `raw-flows`: output from C++ flow aggregator (JSON/protobuf per flow)
-  - `scored-flows`: output from inference server (flow + prediction + confidence)
+- [x] **2.2** Create two Kafka topics ✅ DONE
+  - `raw-flows` + `scored-flows`, 1 partition / 1 replica each, 7-day retention.
+  - Reproducible script: `infra/create-topics.sh` (explicit retention.ms).
 
-- [ ] **2.3** Add Kafka producer to `flow_aggregator.cpp`
-  - Use `librdkafka` C++ client
-  - Publish completed flows to `raw-flows` topic
-  - Tune: batch size, linger time, compression (snappy) for throughput
+- [x] **2.3** Add Kafka producer to the extractor ✅ DONE
+  - `librdkafka` (vcpkg, v2.14.1) wrapped in `cpp/src/kafka_producer.{h,cpp}`
+    (RAII; async produce + delivery-report callback + flush).
+  - Sink in `main.cpp` fans out to file AND/OR Kafka; broker via `KAFKA_BROKERS`
+    env var; keyed by source IP. linger.ms=10, batch.size=1MiB.
+  - Verified: 1.8M pkts → 23,004 flows → **23,004 delivered / 0 failed**;
+    `raw-flows:0:23004` offset confirms all landed; sample message valid.
+  - TODO (2.5 tuning): enable lz4/snappy compression (lz4 already built).
 
 - [ ] **2.4** Write a Kafka consumer in C++ (`feature_consumer.cpp`)
   - Consumes from `raw-flows`
@@ -191,6 +197,36 @@ Live traffic (pcap / UNSW-NB15 replay)
 
 ---
 
+## Phase 6 — Deep-Learning Inference Track (optional, post-Phase 3)
+
+**Goal:** A parallel neural-net subsystem that revives the MLP from the study,
+fixes its biggest weakness, and serves it through a different stack — yielding a
+3-way "model serving" comparison: tree (ONNX/C++) vs NN (TF-Serving) vs compiled
+(XLA/MLIR).
+
+**Why separate:** TF-Serving / JAX / XLA / MLIR are neural-net + accelerator
+tools. They give XGBoost (a tree model) zero benefit, so they do NOT touch the
+Phase 1–3 tree/C++ hot path. They belong on a dedicated NN track or they'd be
+resume-driven dead weight. Slots in after Phase 3 (needs a baseline to compare).
+
+### Tasks
+
+- [ ] **6.1** Reimplement the MLP in **JAX/Flax**, train with **focal loss**
+  - Directly targets the Fuzzers class (weakest in the paper: 0.47–0.63 recall)
+  - Same train/test split + preprocessing as the sklearn study, for a fair compare
+
+- [ ] **6.2** Serve the trained model via **TF-Serving** (gRPC + REST)
+  - Second inference backend alongside the Phase 3 ONNX/C++ path
+  - Compare: latency, throughput, accuracy (esp. Fuzzers recall) vs XGBoost/ONNX
+
+- [ ] **6.3** *(stretch)* **XLA / MLIR** ahead-of-time compilation
+  - AOT-compile the model (JAX export or IREE/MLIR) to a standalone executable
+  - Benchmark vs TF-Serving and ONNX — the "ML compiler / systems" dimension
+  - Note: at this scale (58 features, small MLP) latency gains are marginal;
+    value is demonstrating the compilation stack, not raw speedup
+
+---
+
 ## Suggested Build Order
 
 | Week | Focus |
@@ -224,6 +260,22 @@ Live traffic (pcap / UNSW-NB15 replay)
 ## Progress Log
 
 Durable record of what's been built (in case chat logs are lost). Newest first.
+
+### 2026-06-20 — Phase 2.1–2.3: Kafka streaming online
+- **2.1** `infra/docker-compose.yml`: single-node Kafka in **KRaft** mode (no
+  ZooKeeper) + provectuslabs/kafka-ui. Dual listeners (HOST localhost:9092 for
+  host apps, DOCKER kafka:29092 for in-network UI) — the classic advertised-
+  listener split. Named volume persists topics. UI: http://localhost:8080.
+- **2.2** Topics `raw-flows` + `scored-flows` (1 partition, 1 replica, 7-day
+  retention). Created via UI; reproducible `infra/create-topics.sh` mirrors it
+  with explicit `--config retention.ms=604800000`.
+- **2.3** librdkafka producer. New `cpp/src/kafka_producer.{h,cpp}` = RAII
+  wrapper (async `produce` w/ RK_MSG_COPY, `dr_cb` delivery reports, `flush`).
+  `main.cpp` sink now fans out to file and/or Kafka; broker from `KAFKA_BROKERS`
+  env; messages keyed by source IP for partition affinity. linger.ms=10,
+  batch.size=1MiB (compression deferred to 2.5; lz4 already pulled in by vcpkg).
+  **Verified end-to-end:** 23,004 delivered / 0 failed; topic offset
+  raw-flows:0:23004; sample message is a valid 44-field flow JSON.
 
 ### 2026-06-10 — Tasks 1.3f–h, 1.4, 1.5: PHASE 1 FEATURE-COMPLETE
 - **1.3f** state/service/loss: `tcp_seq` added to Packet (TCP bytes 4–7);

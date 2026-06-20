@@ -1,0 +1,62 @@
+# infra/docker-compose.yml
+# Phase 2.1 — local Kafka (KRaft mode, no ZooKeeper) + a web UI to inspect it.
+#
+# Start:  docker compose -f infra/docker-compose.yml up -d
+# Stop:   docker compose -f infra/docker-compose.yml down
+# Logs:   docker compose -f infra/docker-compose.yml logs -f kafka
+
+services:
+  # ============================================================
+  # The Kafka broker itself (single node, KRaft mode).
+  # ============================================================
+  kafka:
+    image: apache/kafka:3.8.1        # official Kafka image; supports KRaft natively
+    container_name: kafka            # fixed name so other containers can reach "kafka"
+    ports:
+      - "9092:9092"                  # expose broker to the HOST (our C++ apps connect here)
+    environment:
+      # ---- KRaft identity: this one node plays BOTH roles ----
+      KAFKA_NODE_ID: 1                                   # unique id of this node
+      KAFKA_PROCESS_ROLES: broker,controller            # broker = data; controller = metadata
+      KAFKA_CONTROLLER_QUORUM_VOTERS: 1@kafka:9093       # who votes on metadata (just us)
+
+      # ---- Listeners: the network "doors" Kafka opens ----
+      # We open THREE doors with different names:
+      #   HOST       — for clients on your Mac (our C++ producer/consumer)
+      #   DOCKER     — for clients inside the docker network (the Kafka UI)
+      #   CONTROLLER — internal KRaft metadata traffic
+      KAFKA_LISTENERS: HOST://0.0.0.0:9092,DOCKER://0.0.0.0:29092,CONTROLLER://0.0.0.0:9093
+      # What address Kafka TELLS clients to come back on (must be reachable BY them):
+      KAFKA_ADVERTISED_LISTENERS: HOST://localhost:9092,DOCKER://kafka:29092
+      # Every listener uses PLAINTEXT (no TLS/auth — fine for local dev):
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: HOST:PLAINTEXT,DOCKER:PLAINTEXT,CONTROLLER:PLAINTEXT
+      KAFKA_INTER_BROKER_LISTENER_NAME: DOCKER          # how brokers talk to each other
+      KAFKA_CONTROLLER_LISTENER_NAMES: CONTROLLER       # which door is the controller door
+
+      # ---- Single-node settings (defaults assume a multi-node cluster) ----
+      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1         # can't replicate 3x with 1 node
+      KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR: 1
+      KAFKA_TRANSACTION_STATE_LOG_MIN_ISR: 1
+      KAFKA_GROUP_INITIAL_REBALANCE_DELAY_MS: 0         # consumers join instantly (dev)
+      KAFKA_NUM_PARTITIONS: 1                           # default partitions per new topic
+      KAFKA_LOG_DIRS: /var/lib/kafka/data               # where the message logs live
+    volumes:
+      - kafka-data:/var/lib/kafka/data                  # persist topics across restarts
+
+  # ============================================================
+  # Web dashboard to see topics/messages in your browser.
+  # ============================================================
+  kafka-ui:
+    image: provectuslabs/kafka-ui:latest
+    container_name: kafka-ui
+    ports:
+      - "8080:8080"                  # open http://localhost:8080
+    environment:
+      KAFKA_CLUSTERS_0_NAME: local                      # label shown in the UI
+      KAFKA_CLUSTERS_0_BOOTSTRAPSERVERS: kafka:29092     # reach the broker via DOCKER door
+    depends_on:
+      - kafka                        # start the broker first
+
+# Named volume: Docker manages this storage; survives `down` (use `down -v` to wipe).
+volumes:
+  kafka-data:

@@ -41,6 +41,11 @@ find_path(PCAP_INCLUDE_DIR NAMES pcap.h REQUIRED
 # find_package() looks for a CMake config file that vcpkg generates
 find_package(nlohmann_json REQUIRED)
 
+# librdkafka: the Kafka client. vcpkg exports CMake targets:
+#   RdKafka::rdkafka    (C library)
+#   RdKafka::rdkafka++  (C++ wrapper — what we #include and use)
+find_package(RdKafka CONFIG REQUIRED)
+
 # --- Build targets ---
 
 # Create an executable called "flow_extractor" from our source files.
@@ -50,6 +55,7 @@ add_executable(flow_extractor
   src/main.cpp
   src/pcap_reader.cpp
   src/flow_aggregator.cpp
+  src/kafka_producer.cpp
 )
 
 # Tell the compiler where to find header files for this target.
@@ -61,4 +67,5 @@ target_include_directories(flow_extractor PRIVATE ${PCAP_INCLUDE_DIR})
 target_link_libraries(flow_extractor PRIVATE
   ${PCAP_LIBRARY}
   nlohmann_json::nlohmann_json
+  RdKafka::rdkafka++
 )
