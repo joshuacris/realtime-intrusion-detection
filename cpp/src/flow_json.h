@@ -1,6 +1,7 @@
 #pragma once
 
 #include "flow.h"
+#include "flow_history.h"
 #include <nlohmann/json.hpp>   // the vcpkg JSON library
 #include <string>
 #include <cstdio>
@@ -23,11 +24,50 @@ inline const char* proto_name(uint8_t proto) {
     }
 }
 
+// Approximate the Argus-style connection state from what we observed.
+// The labels match the model's one-hot buckets (FIN/INT/CON/REQ; anything
+// else lands in preprocessing's "other" bucket, e.g. RST).
+inline const char* flow_state_label(const FlowKey& key, const FlowState& st) {
+    if (key.proto == 6) {  // TCP
+        if ((st.s_flags | st.d_flags) & TCP_RST) return "RST";
+        if ((st.s_flags & TCP_FIN) && (st.d_flags & TCP_FIN)) return "FIN";
+        if (st.dpkts == 0)   return "INT";   // initiated, never answered (scan-like)
+        if (st.has_synack)   return "CON";   // handshake completed = connected
+        return "REQ";                        // some reply but no real connection
+    }
+    if (key.proto == 17) {  // UDP has no handshake: classify by directionality
+        return (st.spkts > 0 && st.dpkts > 0) ? "CON" : "INT";
+    }
+    return "ECO";  // ICMP echo-style traffic (-> "other" bucket downstream)
+}
+
+// Approximate the application service from the WELL-KNOWN port. UNSW used
+// Bro DPI; the port map is the honest approximation and matches the model's
+// service buckets. "-" = no well-known service (UNSW's own convention).
+inline const char* service_name(uint16_t a, uint16_t b) {
+    // The server side is whichever endpoint sits on a well-known port,
+    // so check both. (e.g. client 51234 -> server 80 = http)
+    for (uint16_t port : {a, b}) {
+        switch (port) {
+            case 80: case 8080: return "http";
+            case 53:            return "dns";
+            case 25:            return "smtp";
+            case 20:            return "ftp-data";
+            case 21:            return "ftp";
+            case 22:            return "ssh";
+            case 110:           return "pop3";
+            default: break;
+        }
+    }
+    return "-";
+}
+
 // Build a JSON object for one completed flow, using UNSW feature field names so
 // it lines up with the model's expected inputs downstream. Only the features we
 // can compute so far are included; derived ones (loads, jitter, ct_*) come in
 // later sub-steps and will be added here.
-inline nlohmann::json flow_to_json(const FlowKey& key, const FlowState& st) {
+inline nlohmann::json flow_to_json(const FlowKey& key, const FlowState& st,
+                                   const CtFeatures& ct) {
     // The destination is whichever canonical endpoint is NOT the initiator.
     uint32_t dst_ip;
     uint16_t dst_port;
@@ -66,7 +106,11 @@ inline nlohmann::json flow_to_json(const FlowKey& key, const FlowState& st) {
     j["dstip"]  = ip_to_string(dst_ip);
     j["dsport"] = dst_port;
     j["proto"]  = proto_name(key.proto);
+    j["state"]  = flow_state_label(key, st);
+    j["service"] = service_name(st.init_port, dst_port);
     j["dur"]    = dur;
+    j["sloss"]  = st.sloss;
+    j["dloss"]  = st.dloss;
     j["spkts"]  = st.spkts;
     j["dpkts"]  = st.dpkts;
     j["sbytes"] = st.sbytes;
@@ -87,5 +131,27 @@ inline nlohmann::json flow_to_json(const FlowKey& key, const FlowState& st) {
     j["synack"] = synack;
     j["ackdat"] = ackdat;
     j["tcprtt"] = tcprtt;
+
+    // Land-attack fingerprint: src and dst are literally the same endpoint.
+    j["is_sm_ips_ports"] = (st.init_ip == dst_ip && st.init_port == dst_port) ? 1 : 0;
+
+    // ct_* sliding-window features (computed by FlowHistory).
+    j["ct_srv_src"]       = ct.ct_srv_src;
+    j["ct_srv_dst"]       = ct.ct_srv_dst;
+    j["ct_dst_ltm"]       = ct.ct_dst_ltm;
+    j["ct_src_ltm"]       = ct.ct_src_ltm;
+    j["ct_src_dport_ltm"] = ct.ct_src_dport_ltm;
+    j["ct_dst_sport_ltm"] = ct.ct_dst_sport_ltm;
+    j["ct_dst_src_ltm"]   = ct.ct_dst_src_ltm;
+    j["ct_state_ttl"]     = ct.ct_state_ttl;
+
+    // DPI stubs — need HTTP/FTP payload parsing (Bro did this for UNSW).
+    // Genuinely 0 for the overwhelming majority of flows; emitted as 0 until
+    // application-layer parsing is added.
+    j["trans_depth"]       = 0;
+    j["response_body_len"] = 0;
+    j["ct_flw_http_mthd"]  = 0;
+    j["is_ftp_login"]      = 0;
+    j["ct_ftp_cmd"]        = 0;
     return j;
 }

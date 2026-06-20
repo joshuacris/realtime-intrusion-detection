@@ -1,6 +1,7 @@
 #include "packet.h"
 #include "pcap_reader.h"
 #include "flow_aggregator.h"
+#include "flow_history.h"
 #include "flow_json.h"
 
 #include <cstdio>
@@ -20,11 +21,31 @@ int main(int argc, char** argv) {
     }
 
     long emitted = 0;
+    FlowHistory history;   // last-100-connections window for the ct_* features
 
-    // The sink: runs whenever a flow completes. Serialize it as one JSON line
-    // (JSON Lines format: one self-contained JSON object per line).
+    // The sink: runs whenever a flow completes. Compute its ct_* context from
+    // the recent-connection window, then serialize as one JSON line.
     FlowAggregator agg([&](const FlowKey& key, const FlowState& st) {
-        out << flow_to_json(key, st).dump() << "\n";
+        // Destination = whichever canonical endpoint is NOT the initiator.
+        uint32_t dst_ip; uint16_t dst_port;
+        if (st.init_ip == key.ip_a && st.init_port == key.port_a) {
+            dst_ip = key.ip_b; dst_port = key.port_b;
+        } else {
+            dst_ip = key.ip_a; dst_port = key.port_a;
+        }
+
+        FlowRecord rec{};
+        rec.src_ip  = st.init_ip;
+        rec.dst_ip  = dst_ip;
+        rec.sport   = st.init_port;
+        rec.dport   = dst_port;
+        rec.service = service_name(st.init_port, dst_port);
+        rec.state   = flow_state_label(key, st);
+        rec.sttl    = st.sttl;
+        rec.dttl    = st.dttl;
+
+        CtFeatures ct = history.observe(rec);
+        out << flow_to_json(key, st, ct).dump() << "\n";
         emitted++;
     });
 

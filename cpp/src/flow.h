@@ -112,6 +112,7 @@ struct FlowState {
     uint32_t init_ip   = 0;   // src_ip of the first packet = the "source"
     uint16_t init_port = 0;   // src_port of the first packet
     bool     seen      = false; // has the first packet initialized this flow?
+    bool     emitted   = false; // closed+emitted; lingers to absorb stragglers
 
     // --- timing (Stime / Ltime / dur) ---
     uint64_t first_ts_us = 0;
@@ -143,6 +144,23 @@ struct FlowState {
     double   d_intpkt_sum = 0;  uint64_t d_intpkt_n = 0;
     double   s_prev_int  = 0;   double s_jit_sum = 0;  uint64_t s_jit_n = 0;
     double   d_prev_int  = 0;   double d_jit_sum = 0;  uint64_t d_jit_n = 0;
+
+    // --- capture-duplicate suppression ---
+    // The UNSW pcap was tapped at a point that records every packet TWICE
+    // (µs apart, byte-identical). Signature of the last accepted packet lets
+    // add_packet drop the immediate duplicate. Real retransmits are >200ms
+    // apart (TCP min RTO), so a 5ms window never eats genuine loss.
+    bool     last_from_src = false;
+    uint32_t last_seq   = 0;
+    uint32_t last_len   = 0;
+    uint8_t  last_flags = 0;
+    uint64_t last_pkt_ts = 0;
+
+    // --- retransmission detection (sloss / dloss) ---
+    // Highest stream position (seq + payload) seen per direction. A segment
+    // starting BELOW this carries bytes the sender already sent = retransmit.
+    uint32_t s_max_seq_end = 0;  bool s_seq_init = false;  uint64_t sloss = 0;
+    uint32_t d_max_seq_end = 0;  bool d_seq_init = false;  uint64_t dloss = 0;
 
     // --- TCP 3-way handshake timestamps (synack / ackdat / tcprtt) ---
     uint64_t syn_ts    = 0;  bool has_syn    = false;  // pure SYN (source)

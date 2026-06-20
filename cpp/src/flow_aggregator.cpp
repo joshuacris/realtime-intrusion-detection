@@ -28,6 +28,38 @@ void FlowAggregator::add_packet(const Packet& p) {
     FlowKey key = make_flow_key(p);
     FlowState& st = flows_[key];   // get-or-create (reference!)
 
+    // ---- Capture-duplicate suppression ----
+    // Drop this packet if it's byte-identical (direction/seq/len/flags) to the
+    // previous packet of this flow and arrived within 5ms — the tap recorded
+    // each packet twice. Must run BEFORE any counters are touched.
+    if (st.seen) {
+        bool from_src = st.is_from_source(p);
+        if (from_src == st.last_from_src &&
+            p.tcp_seq      == st.last_seq  &&
+            p.ip_total_len == st.last_len  &&
+            p.tcp_flags    == st.last_flags &&
+            p.timestamp_us - st.last_pkt_ts < 5000) {
+            return;   // capture duplicate — ignore entirely
+        }
+        st.last_from_src = from_src;
+    } else {
+        st.last_from_src = true;   // first packet defines the source side
+    }
+    st.last_seq    = p.tcp_seq;
+    st.last_len    = p.ip_total_len;
+    st.last_flags  = p.tcp_flags;
+    st.last_pkt_ts = p.timestamp_us;
+
+    // ---- Linger-after-close (like Argus/NetFlow) ----
+    // A closed flow stays in the map to swallow stragglers (late dup of the
+    // final ACK, etc.). Only a fresh pure SYN means a NEW connection is
+    // reusing the 5-tuple: reset the slot and start over.
+    if (st.emitted) {
+        bool pure_syn = (p.tcp_flags & TCP_SYN) && !(p.tcp_flags & TCP_ACK);
+        if (!pure_syn) return;     // straggler of the dead flow — ignore
+        st = FlowState{};          // reset IN PLACE (st is a reference into the map)
+    }
+
     // First packet defines the source/initiator direction.
     if (!st.seen) {
         st.seen        = true;
@@ -57,6 +89,20 @@ void FlowAggregator::add_packet(const Packet& p) {
             st.s_prev_int = interval;
         }
         st.s_last_ts = p.timestamp_us;
+
+        // Retransmission check (data segments only — pure ACKs reuse seq
+        // legitimately). Signed-difference compare handles 32-bit seq wraparound.
+        if (key.proto == 6 && p.payload_len > 0) {
+            uint32_t seg_end = p.tcp_seq + p.payload_len;
+            if (!st.s_seq_init) {
+                st.s_seq_init = true;
+                st.s_max_seq_end = seg_end;
+            } else if (static_cast<int32_t>(p.tcp_seq - st.s_max_seq_end) < 0) {
+                st.sloss += 1;          // starts below what was already sent
+            } else {
+                st.s_max_seq_end = seg_end;
+            }
+        }
 
         // Handshake: pure SYN (SYN set, ACK clear) marks the start of setup.
         if (key.proto == 6 && (p.tcp_flags & TCP_SYN) &&
@@ -89,6 +135,19 @@ void FlowAggregator::add_packet(const Packet& p) {
         }
         st.d_last_ts = p.timestamp_us;
 
+        // Retransmission check, destination direction (same logic as source).
+        if (key.proto == 6 && p.payload_len > 0) {
+            uint32_t seg_end = p.tcp_seq + p.payload_len;
+            if (!st.d_seq_init) {
+                st.d_seq_init = true;
+                st.d_max_seq_end = seg_end;
+            } else if (static_cast<int32_t>(p.tcp_seq - st.d_max_seq_end) < 0) {
+                st.dloss += 1;
+            } else {
+                st.d_max_seq_end = seg_end;
+            }
+        }
+
         // Handshake: SYN-ACK (both SYN and ACK set) is the server's reply.
         if (key.proto == 6 && (p.tcp_flags & TCP_SYN) &&
             (p.tcp_flags & TCP_ACK) && !st.has_synack) {
@@ -98,12 +157,12 @@ void FlowAggregator::add_packet(const Packet& p) {
 
     // ---- Explicit TCP termination ----
     // RST = abrupt reset (either side). FIN on BOTH sides = graceful close.
-    if (key.proto == 6) {
+    if (key.proto == 6 && !st.emitted) {
         bool reset  = ((st.s_flags | st.d_flags) & TCP_RST) != 0;
         bool closed = (st.s_flags & TCP_FIN) && (st.d_flags & TCP_FIN);
         if (reset || closed) {
-            emit(key, st);             // serialize while st is still valid...
-            flows_.erase(key);         // ...then remove it. Do NOT touch st after.
+            emit(key, st);
+            st.emitted = true;   // linger in the map; idle sweep reclaims it
         }
     }
 }
@@ -115,7 +174,8 @@ void FlowAggregator::sweep_idle(uint64_t now_us) {
         // `now_us > last + timeout` (instead of `now - last > timeout`) avoids
         // unsigned underflow if timestamps are slightly out of order.
         if (now_us > it->second.last_ts_us + idle_timeout_us_) {
-            emit(it->first, it->second);
+            if (!it->second.emitted)   // corpses were already emitted at close
+                emit(it->first, it->second);
             it = flows_.erase(it);     // erase() returns the NEXT valid iterator
         } else {
             ++it;                      // only advance when we DON'T erase
@@ -124,7 +184,8 @@ void FlowAggregator::sweep_idle(uint64_t now_us) {
 }
 
 void FlowAggregator::flush() {
-    for (const auto& [key, st] : flows_) emit(key, st);
+    for (const auto& [key, st] : flows_)
+        if (!st.emitted) emit(key, st);
     flows_.clear();
 }
 

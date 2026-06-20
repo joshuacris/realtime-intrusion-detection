@@ -121,6 +121,7 @@ long read_pcap(const char* path,
         uint16_t src_port = 0, dst_port = 0;
         uint8_t  tcp_flags = 0;
         uint16_t tcp_window = 0;
+        uint32_t tcp_seq = 0;
         uint32_t l4_hdr_len = 0;
 
         if (proto == IP_PROTO_TCP) {
@@ -129,6 +130,10 @@ long read_pcap(const char* path,
             if (caplen < l4_offset + 20) continue;     // min TCP header is 20 bytes
             src_port  = read_be16(l4 + 0);             // bytes 0-1: source port
             dst_port  = read_be16(l4 + 2);             // bytes 2-3: dest port (e.g. 80=HTTP)
+            // Bytes 4-7: sequence number. TCP numbers every BYTE it sends; the
+            // seq says "this segment starts at byte N of my stream". Seeing a
+            // segment start below the highest byte already sent = retransmission.
+            tcp_seq    = read_be32(l4 + 4);
             // Byte 12 high nibble = data offset = header length in 32-bit words.
             l4_hdr_len = (l4[12] >> 4) * 4;            // (like IHL, but for TCP)
             // Byte 13 = control-flag bitmask. The flag PATTERN reveals behavior:
@@ -162,6 +167,7 @@ long read_pcap(const char* path,
         pkt.tcp_flags    = tcp_flags;
         pkt.ttl          = ttl;
         pkt.tcp_window   = tcp_window;
+        pkt.tcp_seq      = tcp_seq;
         pkt.ip_total_len = total_len;
         pkt.timestamp_us = static_cast<uint64_t>(header->ts.tv_sec) * 1000000ULL
                          + static_cast<uint64_t>(header->ts.tv_usec);

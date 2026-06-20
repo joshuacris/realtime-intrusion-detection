@@ -16,6 +16,7 @@ struct Packet {
     uint8_t  tcp_flags;     // TCP flag bitmask (0 if not TCP)
     uint8_t  ttl;           // IP time-to-live (feeds sttl/dttl per direction)
     uint16_t tcp_window;    // TCP advertised window (feeds swin/dwin; 0 if not TCP)
+    uint32_t tcp_seq;       // TCP sequence number (feeds sloss/dloss; 0 if not TCP)
     uint64_t timestamp_us;  // capture time, microseconds since epoch
     uint32_t payload_len;   // application-layer bytes (excludes all headers)
     uint32_t ip_total_len;  // whole IP datagram size (feeds sbytes/dbytes)

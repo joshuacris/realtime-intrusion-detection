@@ -1,5 +1,5 @@
 # ── C++ build ──────────────────────────────────────────────────────
-cpp/build/
+cpp/build*/
 cpp/vcpkg_installed/
 
 # ── Flow extractor output ──────────────────────────────────────────
@@ -38,4 +38,5 @@ data/
 # ── Personal notes ─────────────────────────────────────────────────
 cpp/CPP_TAKEAWAYS.md
 cpp/NETWORKING_TAKEAWAYS.md
+ACHIEVEMENTS.md
 PLAN.md
