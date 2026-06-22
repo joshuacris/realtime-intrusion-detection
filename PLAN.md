@@ -132,17 +132,32 @@ Live traffic (pcap / UNSW-NB15 replay)
 
 ### Tasks
 
-- [ ] **3.1** Export XGBoost to ONNX (Python)
-  - Use `sklearn-onnx` / `onnxmltools` to convert the trained model from `notebooks/xgboost.ipynb`
-  - Validate: run ONNX predictions against original sklearn predictions on the test set
-  - Target: identical predictions (ONNX vs. sklearn) on all 55,945 test records
-  - Save to `models/xgboost_intrusion.onnx`
+- [x] **3.1** Export XGBoost to ONNX (Python) ✅ DONE
+  - `scripts/export_onnx.py`: trains XGBoost (paper's best params, reproducible)
+    on the UNSW CSV, reindexes columns to the exact `feature_schema.h` order,
+    exports via `onnxmltools.convert_xgboost(model.get_booster())`.
+  - Converting the BOOSTER (not the sklearn wrapper) avoids the skl2onnx↔
+    onnxmltools type clash AND yields clean outputs: `label` + `probabilities`
+    [N,2] tensor (col 1 = attack prob), no ZipMap — ideal for C++.
+  - **PARITY: label match 100%, max prob diff 4.77e-07** on all 55,945 test rows.
+    Reproduced study: test ROC-AUC 0.9698, threshold 0.69, attack F1 0.87.
+  - Artifacts (gitignored `models/`): `xgboost_intrusion.onnx` (725 KB),
+    `feature_order.json` (the 58-col contract), `threshold.txt` (0.69).
+  - Python env: `.venv` (venv) with numpy/pandas/sklearn/xgboost/onnx/
+    onnxruntime/onnxmltools (NOT tensorflow — Phase 6 only).
 
-- [ ] **3.2** Write a C++ inference server (`inference_server.cpp`)
-  - Loads the ONNX model at startup via ONNX Runtime C++ API
-  - Consumes feature vectors from the Kafka consumer (Phase 2)
-  - Runs batched inference (batch size = 32–128 for throughput)
-  - Publishes `{flow_id, label, confidence, latency_us}` to `scored-flows` Kafka topic
+- [x] **3.2** Write a C++ inference server (`inference_server.cpp`) ✅ DONE
+  - Loads ONNX model via ONNX Runtime C++ API (Homebrew onnxruntime 1.27, NOT
+    vcpkg — see D18). New `cpp/src/onnx_model.{h,cpp}` (Env/Session/Value).
+  - Consumes `model-ready-features`, micro-batches (BATCH=64, flush on idle),
+    runs one Run() per batch, applies threshold (0.69 from models/threshold.txt).
+  - Publishes `{5-tuple, attack_prob, label, latency_us}` to `scored-flows`.
+  - **Full pipeline verified end-to-end**: pcap → raw-flows → feature_consumer →
+    model-ready-features → inference_server → scored-flows (23,004 flows).
+  - **D17 skew result (preliminary, very positive):** ALL 1,591 alerts came from
+    the attacker subnet 175.45.176.x (71% of its flows); ZERO false positives on
+    20,762 normal-host (59.166.x) flows. Training on Argus-distribution CSV does
+    NOT break serving on our features. Inference latency ~12µs/flow (batched).
 
 - [ ] **3.3** Add Redis alert deduplication
   - For each predicted attack, check Redis for a recent alert on the same src_ip/dst_ip/proto key
@@ -274,6 +289,36 @@ resume-driven dead weight. Slots in after Phase 3 (needs a baseline to compare).
 ## Progress Log
 
 Durable record of what's been built (in case chat logs are lost). Newest first.
+
+### 2026-06-21 — Phase 3.2: C++ ONNX inference server
+- ONNX Runtime via Homebrew (prebuilt 1.27, NOT vcpkg source build — D18).
+  CMake find_library + guarded target (project still builds without it).
+- New `cpp/src/onnx_model.{h,cpp}`: RAII wrapper over Ort::Env/Session; predict()
+  scores a [n,58] batch in one Run(), returns attack prob (probabilities[:,1]).
+  Hardcoded tensor names "input"/"probabilities" (avoids version-y name API);
+  zero-copy input tensor over our float buffer.
+- New `cpp/src/inference_server.cpp` (3rd executable): consume
+  model-ready-features → micro-batch (64, idle-flush) → score → threshold (0.69)
+  → produce scored-flows. SIGINT-graceful; per-message try/catch.
+- **End-to-end pipeline verified** on 23,004 flows through all 5 stages.
+- **D17 skew measured (preliminary):** 1,591 alerts, 100% from attacker subnet
+  175.45.176.x; 0 false positives on 20,762 normal 59.166.x flows. Skew does NOT
+  break the model. Inference ~12µs/flow batched. (Apparent slowness earlier was
+  consumer-group join + offset-report lag, not inference — full benchmark in 3.4.)
+
+### 2026-06-21 — Phase 3.1: XGBoost → ONNX export
+- Set up Python `.venv` (no venv existed before; Python ran in conda base —
+  caused a "which python got the pip install" mix-up, the exact problem venvs
+  solve). Installed the ONNX-pipeline subset (not tensorflow).
+- `scripts/export_onnx.py`: train (paper best params) → reindex to
+  feature_schema.h order → `onnxmltools.convert_xgboost(get_booster())`.
+- Debugging trail: (1) skl2onnx↔onnxmltools `FloatTensorType` class clash →
+  use onnxmltools directly; (2) booster carried pandas col names → train on
+  numpy so it uses f0..f57; (3) first parity read out[0]=label not
+  out[1]=probabilities (max diff 0.5) → read probabilities[:,1].
+- **Result:** 100% label parity, max prob diff 4.77e-07 vs native XGBoost;
+  ROC-AUC 0.9698 / thr 0.69 / attack F1 0.87 (matches the study). Decision D17
+  (train on CSV, measure skew later) recorded.
 
 ### 2026-06-20 — Phase 2.5: load test + tuning (PHASE 2 COMPLETE)
 - Tunings: producer lz4 compression (kafka_producer.cpp); feature_consumer

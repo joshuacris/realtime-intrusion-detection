@@ -81,3 +81,29 @@ target_link_libraries(feature_consumer PRIVATE
   nlohmann_json::nlohmann_json
   RdKafka::rdkafka++
 )
+
+# Third executable: the ONNX inference server.
+# ONNX Runtime comes from Homebrew (brew install onnxruntime), NOT vcpkg
+# (vcpkg builds it from source — huge/slow). Find it like libpcap. We GUARD the
+# target so the rest of the project still builds if onnxruntime isn't installed.
+find_path(ONNXRUNTIME_INCLUDE_DIR onnxruntime_cxx_api.h
+  HINTS /opt/homebrew/include/onnxruntime /opt/homebrew/include)
+find_library(ONNXRUNTIME_LIB onnxruntime HINTS /opt/homebrew/lib)
+
+if(ONNXRUNTIME_INCLUDE_DIR AND ONNXRUNTIME_LIB)
+  add_executable(inference_server
+    src/inference_server.cpp
+    src/onnx_model.cpp
+    src/kafka_consumer.cpp
+    src/kafka_producer.cpp
+  )
+  target_include_directories(inference_server PRIVATE ${ONNXRUNTIME_INCLUDE_DIR})
+  target_link_libraries(inference_server PRIVATE
+    nlohmann_json::nlohmann_json
+    RdKafka::rdkafka++
+    ${ONNXRUNTIME_LIB}
+  )
+else()
+  message(STATUS "onnxruntime not found — skipping inference_server "
+                 "(run: brew install onnxruntime)")
+endif()

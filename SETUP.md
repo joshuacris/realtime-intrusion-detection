@@ -19,6 +19,31 @@ Build, run, and operate the real-time intrusion detection pipeline locally.
 
 ---
 
+## Python environment (for model training / ONNX export)
+
+The Python side (preprocessing, model export) runs in a project-local venv —
+isolated from system/conda Python so there's no "which interpreter got the
+install?" ambiguity.
+
+```bash
+python3 -m venv .venv
+source .venv/bin/activate
+pip install --upgrade pip
+pip install numpy pandas scikit-learn xgboost onnx onnxruntime onnxmltools skl2onnx
+# (tensorflow/keras in requirements.txt are only for the optional Phase 6 NN track)
+```
+
+### (Re)generate the ONNX model
+
+`models/` is gitignored, so regenerate the model from the CSVs anytime:
+
+```bash
+.venv/bin/python scripts/export_onnx.py
+```
+Writes `models/xgboost_intrusion.onnx`, `models/feature_order.json` (the 58-col
+contract — must match `cpp/src/feature_schema.h`), and `models/threshold.txt`.
+Validates 100% label parity vs native XGBoost before saving.
+
 ## Build the C++ flow extractor
 
 From `cpp/`:

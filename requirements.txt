@@ -9,6 +9,12 @@ shap
 tensorflow
 keras
 
+# ONNX export + runtime (Phase 3)
+onnx
+onnxruntime
+onnxmltools
+skl2onnx
+
 # Visualization
 matplotlib
 seaborn

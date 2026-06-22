@@ -137,6 +137,54 @@ the encoder now and the Phase 3 ONNX export.
 wrong (training/serving skew). Centralizing the order eliminates that class of
 bug.
 
+### D16 — Model serving: export to ONNX + ONNX Runtime
+**Chosen:** export the trained XGBoost to ONNX; load/run it in the C++ server via
+ONNX Runtime.
+**Alternatives:** native libxgboost C API; Treelite (compile trees to C); embed a
+Python interpreter.
+**Rationale:** ONNX decouples the *model* from the *server* — the C++ code speaks
+one format, so XGBoost today and a JAX/Keras NN later (Phase 6) use the same code
+path. Native/ Treelite are tree-only (no path to the NN track); embedding Python
+reintroduces the interpreter we're eliminating. ONNX is the industry-standard
+interchange format with a clean C++ API.
+
+### D17 — Train on the UNSW CSV, then MEASURE the train/serve skew
+**Chosen (Option A):** train XGBoost on the UNSW CSV (Argus/Bro features, all 58)
+as the baseline, then empirically test distribution skew by scoring our own
+extractor's flows and checking the known attacker subnet (175.45.176.0/24) is
+flagged. Mitigate only if it actually fails.
+**Alternatives:** (B) train only on the low-skew features we reproduce faithfully
+(drop swin/dwin/tcprtt/synack/ackdat/sjit/djit/sloss/dloss → ~49 features);
+(C) label our own flows via the UNSW ground-truth event file and train on our
+features (eliminates skew, but a sub-project + needs a GT file we lack).
+**Rationale:** the UNSW CSV is the ONLY labeled data we have — our raw pcap flows
+are unlabeled — so training on our own features isn't free. Trees are partly
+robust to scale shift (they split on thresholds), so skew may not bite; the
+honest engineering move is to MEASURE it (we have a free coarse ground truth in
+the documented attacker subnet) rather than assume it. Escalation path if the
+measurement shows misclassification: B (cheap, big consistency win) then C
+(principled, heavy). This is the training/serving-skew risk first flagged in the
+1.4 validation, now made testable.
+
+### D18 — ONNX Runtime from Homebrew, not vcpkg
+**Chosen:** install ONNX Runtime via Homebrew (prebuilt bottle 1.27); find it in
+CMake with `find_library` (like libpcap).
+**Alternative:** vcpkg `onnxruntime` port.
+**Rationale:** the vcpkg port builds ONNX Runtime FROM SOURCE — enormous, slow
+(10–30+ min), and fragile on arm64. The Homebrew bottle is prebuilt and installs
+in seconds. The C++ Kafka client stays on vcpkg (no good bottle); ONNX Runtime
+on brew. Mixed sourcing is fine — pick the fastest reliable source per dep. The
+new target is guarded in CMake so the project still builds if it's absent.
+
+### D17 (update) — skew measured: it does NOT break the model
+The empirical test from D17 ran in 3.2: scoring our OWN extractor's flows with
+the CSV-trained model flagged **100% of alerts from the documented attacker
+subnet (175.45.176.x)** and produced **0 false positives on 20,762 normal-host
+flows**. So Option A held — the train/serve distribution skew did not degrade
+class separation in practice (trees' threshold robustness + the lab data's clean
+attack/normal split). No escalation to B/C needed for now; revisit if real-world
+traffic proves messier.
+
 ---
 
 ## Major Challenges & Resolutions
