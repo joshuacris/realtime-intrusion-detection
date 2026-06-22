@@ -2,7 +2,11 @@
 #include "kafka_producer.h"
 #include "onnx_model.h"
 #include "redis_dedup.h"
+#include "metrics.h"
+#include "logging.h"
 
+#include <prometheus/counter.h>
+#include <prometheus/histogram.h>
 #include <nlohmann/json.hpp>
 #include <atomic>
 #include <chrono>
@@ -57,6 +61,25 @@ int main() {
 
     long processed = 0, alerts = 0, fired = 0, suppressed = 0, errors = 0;
 
+    JsonLogger logger;   // structured per-flow log (LOG_FILE or stderr)
+
+    // ---- Prometheus metrics (served at :9103/metrics) ----
+    Metrics metrics("0.0.0.0:9103");
+    auto& scored_total = prometheus::BuildCounter()
+        .Name("ids_scored_total").Help("flows scored")
+        .Register(*metrics.registry).Add({});
+    auto& fired_total = prometheus::BuildCounter()
+        .Name("ids_alerts_fired_total").Help("novel alerts emitted (post-dedup)")
+        .Register(*metrics.registry).Add({});
+    auto& suppressed_total = prometheus::BuildCounter()
+        .Name("ids_alerts_suppressed_total").Help("duplicate alerts suppressed")
+        .Register(*metrics.registry).Add({});
+    auto& latency = prometheus::BuildHistogram()
+        .Name("ids_inference_latency_seconds").Help("per-flow inference latency")
+        .Register(*metrics.registry)
+        .Add({}, prometheus::Histogram::BucketBoundaries{
+            1e-6, 5e-6, 1e-5, 2.5e-5, 5e-5, 1e-4, 2.5e-4, 5e-4, 1e-3, 5e-3});
+
     // Score the accumulated batch, publish a verdict per row, then clear.
     auto flush = [&]() {
         if (metas.empty()) return;
@@ -90,6 +113,24 @@ int main() {
             m["latency_us"]  = per_us;
             producer.send(m.value("srcip", std::string("")), m.dump());
             processed++;
+
+            // metrics: bump counters + record latency (seconds) per flow
+            scored_total.Increment();
+            latency.Observe(per_us / 1e6);
+            if (label == 1) (alert ? fired_total : suppressed_total).Increment();
+
+            // structured log line per scored flow (greppable / jq-able)
+            logger.log({
+                {"flow_id", m.value("srcip", std::string("")) + ":"
+                          + std::to_string(m.value("sport", 0)) + "->"
+                          + m.value("dstip", std::string("")) + ":"
+                          + std::to_string(m.value("dsport", 0)) + "/"
+                          + m.value("proto", std::string(""))},
+                {"prediction", label},
+                {"confidence", probs[i]},
+                {"alert",      alert},
+                {"latency_us", per_us},
+            });
         }
         feats.clear();
         metas.clear();

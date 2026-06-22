@@ -66,6 +66,43 @@ services:
     depends_on:
       - kafka                        # start the broker first
 
+  # ============================================================
+  # Observability stack (Phase 4): metrics scraping + dashboards.
+  # ============================================================
+  # Exposes Kafka consumer-group lag etc. as Prometheus metrics.
+  kafka-exporter:
+    image: danielqsj/kafka-exporter:latest
+    container_name: kafka-exporter
+    command: ["--kafka.server=kafka:29092"]
+    ports:
+      - "9308:9308"
+    depends_on:
+      - kafka
+
+  # Scrapes /metrics from our C++ services (on the host) + kafka-exporter.
+  prometheus:
+    image: prom/prometheus:latest
+    container_name: prometheus
+    ports:
+      - "9090:9090"
+    volumes:
+      - ./prometheus.yml:/etc/prometheus/prometheus.yml:ro
+
+  # Dashboards. Auto-provisions the Prometheus datasource (+ dashboard in 4.2).
+  grafana:
+    image: grafana/grafana:latest
+    container_name: grafana
+    ports:
+      - "3000:3000"
+    environment:
+      GF_AUTH_ANONYMOUS_ENABLED: "true"          # no login for local dev
+      GF_AUTH_ANONYMOUS_ORG_ROLE: "Admin"
+      GF_SECURITY_ALLOW_EMBEDDING: "true"
+    volumes:
+      - ./grafana/provisioning:/etc/grafana/provisioning:ro
+    depends_on:
+      - prometheus
+
 # Named volume: Docker manages this storage; survives `down` (use `down -v` to wipe).
 volumes:
   kafka-data:

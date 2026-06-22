@@ -219,6 +219,35 @@ class separation in practice (trees' threshold robustness + the lab data's clean
 attack/normal split). No escalation to B/C needed for now; revisit if real-world
 traffic proves messier.
 
+### D22 — Metrics via prometheus-cpp + pull-based scraping
+**Chosen:** instrument C++ services with `prometheus-cpp` (each runs an embedded
+`/metrics` HTTP endpoint); Prometheus scrapes them on an interval.
+**Alternatives:** push-based metrics (statsd / Prometheus pushgateway); a
+hand-rolled metrics endpoint; logs-only.
+**Rationale:** pull/scrape is the cloud-native default — services don't need to
+know where Prometheus is, targets are managed centrally, and it maps directly
+onto Kubernetes service discovery (Phase 5). prometheus-cpp gives counters/
+gauges/histograms + the exposer out of the box. (Pushgateway is for short-lived
+batch jobs — which is why our batch-style flow_extractor isn't scraped; the
+long-running services are.)
+
+### D23 — Prometheus + Grafana + kafka-exporter as compose services
+**Chosen:** run the observability stack as prebuilt Docker images, configured by
+mounted files (`infra/prometheus.yml`, Grafana provisioning); Kafka lag via the
+`danielqsj/kafka-exporter` image rather than computing lag in our code.
+**Rationale:** same containerized-infra pattern as Kafka/Redis — reproducible,
+no host installs. A dedicated exporter is the standard way to get broker/
+consumer-group lag into Prometheus without coupling it to our app. Services on
+the host are scraped via `host.docker.internal`.
+
+### D24 — Histogram for latency (not gauge/summary)
+**Chosen:** `ids_inference_latency_seconds` as a Prometheus **histogram** with
+explicit buckets (1µs–5ms).
+**Rationale:** histograms store bucket counts, so Prometheus' `histogram_quantile`
+computes p50/p99 across instances and time windows cheaply — without storing
+every sample. (A gauge loses the distribution; a "summary" computes quantiles
+client-side and can't be aggregated across instances.)
+
 ---
 
 ## Major Challenges & Resolutions

@@ -1,0 +1,11 @@
+# Tells Grafana to load dashboard JSON files from a directory on startup.
+apiVersion: 1
+providers:
+  - name: ids
+    orgId: 1
+    type: file
+    disableDeletion: false
+    editable: true
+    options:
+      path: /etc/grafana/provisioning/dashboards/json
+      foldersFromFilesStructure: false

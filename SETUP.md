@@ -110,6 +110,12 @@ KAFKA_BROKERS=localhost:9092 ./cpp/build/inference_server
 - Prints scored / attacks / fired / suppressed on Ctrl-C.
 - Output records carry `attack_prob`, `label`, `alert` (true only for novel
   attacks after dedup), and `latency_us`.
+- Structured per-flow JSON logs go to `LOG_FILE` (else stderr), separate from the
+  stdout summary:
+  ```bash
+  LOG_FILE=/tmp/inference.jsonl KAFKA_BROKERS=localhost:9092 ./cpp/build/inference_server
+  grep '"prediction":1' /tmp/inference.jsonl | head        # just the attacks
+  ```
 - `docker compose ... up -d` already starts Redis alongside Kafka; dedup
   fails-open (still emits) if Redis is down.
 
@@ -292,6 +298,63 @@ echo '{"srcip":"175.45.176.2","sport":13284,"dstip":"149.171.126.16","dsport":80
   | docker exec -i kafka /opt/kafka/bin/kafka-console-producer.sh --bootstrap-server localhost:9092 --topic scored-flows
 # client shows: ALERT 175.45.176.2:13284 -> 149.171.126.16:80 tcp prob=0.990 ...
 # (alert:false messages are filtered out)
+```
+
+## Observability (metrics + dashboards)
+
+The stack: each C++ service exposes Prometheus metrics at `/metrics`; Prometheus
+scrapes them; Grafana visualizes. **Metrics are pull-based — they only exist
+while the service is running.** Prometheus, Grafana, and kafka-exporter come up
+with `docker compose up -d`.
+
+| What | URL |
+|------|-----|
+| Grafana dashboard "IDS Pipeline" | http://localhost:3000/d/ids-pipeline (anon admin) |
+| Prometheus UI (Graph / Status→Targets) | http://localhost:9090 |
+| inference_server metrics | http://localhost:9103/metrics (while running) |
+| feature_consumer metrics | http://localhost:9102/metrics (while running) |
+| kafka-exporter (lag) | http://localhost:9308/metrics |
+
+### See metrics for a single run
+```bash
+# 1. start a service (exposes /metrics while it runs)
+KAFKA_BROKERS=localhost:9092 ./cpp/build/inference_server      # serves :9103
+# 2. view raw metrics
+curl -s localhost:9103/metrics | grep ids_
+# 3. query via Prometheus
+curl -s 'localhost:9090/api/v1/query?query=ids_scored_total'
+# 4. stop it
+pkill -INT inference_server
+```
+
+### See LIVE graphs (continuous traffic)
+`rate()` / percentiles need ongoing traffic, so run the pipeline in a replay loop:
+```bash
+B=localhost:9092
+docker exec redis redis-cli FLUSHALL                              # fresh dedup
+KAFKA_BROKERS=$B ./cpp/build/feature_consumer &                   # :9102
+KAFKA_BROKERS=$B ./cpp/build/inference_server &                   # :9103
+for i in $(seq 1 30); do KAFKA_BROKERS=$B ./cpp/build/flow_extractor data/1.pcap >/dev/null 2>&1; done &
+# open http://localhost:3000/d/ids-pipeline and watch the panels move
+# stop everything when done:
+pkill -INT feature_consumer inference_server flow_extractor
+```
+Reference live values seen: ~7k flows/s, p99 latency ~34µs, alert fire/suppress
+oscillating with the 60s dedup window.
+
+### Useful PromQL
+```promql
+rate(ids_scored_total[1m])                                                     # flows/sec
+histogram_quantile(0.99, sum(rate(ids_inference_latency_seconds_bucket[1m])) by (le))  # p99 latency
+rate(ids_alerts_fired_total[1m])                                               # alert rate
+sum(kafka_consumergroup_lag) by (consumergroup)                                # consumer lag
+```
+
+### If Grafana fails to start after changing a datasource
+Changing a provisioned datasource's `uid` conflicts with Grafana's stored copy.
+Recreate the container (it has no volume, so this resets its DB cleanly):
+```bash
+docker compose -f infra/docker-compose.yml up -d --force-recreate grafana
 ```
 
 ## Shutting down & resuming (e.g. rebooting your Mac)

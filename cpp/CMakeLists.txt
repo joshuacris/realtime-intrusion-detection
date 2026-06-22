@@ -49,6 +49,10 @@ find_package(RdKafka CONFIG REQUIRED)
 # hiredis: minimal C Redis client (vcpkg) — used for alert deduplication.
 find_package(hiredis CONFIG REQUIRED)
 
+# prometheus-cpp: metrics client + embedded /metrics HTTP exposer (vcpkg).
+# The "pull" component includes the exposer; it depends on "core".
+find_package(prometheus-cpp CONFIG REQUIRED)
+
 # --- Build targets ---
 
 # Create an executable called "flow_extractor" from our source files.
@@ -83,6 +87,7 @@ add_executable(feature_consumer
 target_link_libraries(feature_consumer PRIVATE
   nlohmann_json::nlohmann_json
   RdKafka::rdkafka++
+  prometheus-cpp::pull
 )
 
 # Third executable: the ONNX inference server.
@@ -106,6 +111,7 @@ if(ONNXRUNTIME_INCLUDE_DIR AND ONNXRUNTIME_LIB)
     nlohmann_json::nlohmann_json
     RdKafka::rdkafka++
     hiredis::hiredis
+    prometheus-cpp::pull
     ${ONNXRUNTIME_LIB}
   )
 

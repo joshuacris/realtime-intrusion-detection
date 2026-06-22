@@ -199,17 +199,37 @@ Live traffic (pcap / UNSW-NB15 replay)
 
 ### Tasks
 
-- [ ] **4.1** Instrument the C++ pipeline with Prometheus metrics
-  - Use `prometheus-cpp` library
-  - Expose: `flows_ingested_total`, `inference_latency_seconds` (histogram), `alerts_fired_total`, `kafka_lag_messages`
+- [x] **4.1** Instrument the C++ pipeline with Prometheus metrics ✅ DONE
+  - `prometheus-cpp` (vcpkg 1.3.0) wrapped in `cpp/src/metrics.h` (starts the
+    embedded /metrics exposer + registry; bind addr via METRICS_ADDR env).
+  - feature_consumer (:9102): `ids_flows_ingested_total`. inference_server
+    (:9103): `ids_scored_total`, `ids_alerts_fired_total`,
+    `ids_alerts_suppressed_total`, `ids_inference_latency_seconds` (histogram).
+  - Kafka lag via `kafka-exporter` container (no app code). Prometheus + Grafana
+    + kafka-exporter added to docker-compose; `infra/prometheus.yml` scrapes the
+    host services (host.docker.internal:9102/9103) + exporter; Grafana datasource
+    auto-provisioned (`infra/grafana/provisioning/`).
+  - **Verified:** inference_server target health=up in Prometheus; PromQL
+    `ids_scored_total`=23004; latency histogram buckets reconcile with the 3.4
+    benchmark (p50 ~10µs, p99 ~25µs); kafka-exporter target up.
 
-- [ ] **4.2** Add a Grafana dashboard
-  - Panels: flows/sec, p50/p99 inference latency, alert rate, Kafka consumer lag
-  - File: `infra/grafana/dashboard.json`
+- [x] **4.2** Add a Grafana dashboard ✅ DONE
+  - `infra/grafana/provisioning/dashboards/json/ids.json` (dashboard-as-code,
+    auto-provisioned) + provider.yml; datasource pinned to uid `prometheus`.
+  - Panels: Throughput (flows/sec), Inference latency p50/p99 (histogram_quantile),
+    Alert rate (fired vs suppressed), Kafka consumer lag, + Total scored / Alerts
+    fired stat panels.
+  - **Verified live** via a replay loop: ~7k flows/s, p99 latency ~34µs (matches
+    3.4 benchmark), alert fire/suppress oscillating with the 60s dedup window.
+  - Dashboard: http://localhost:3000/d/ids-pipeline
 
-- [ ] **4.3** Add structured logging
-  - JSON logs with: `flow_id`, `timestamp`, `prediction`, `confidence`, `latency_us`
-  - Pipe to a log file or stdout for easy grepping
+- [x] **4.3** Add structured logging ✅ DONE
+  - `cpp/src/logging.h`: `JsonLogger` writes one compact JSON object per scored
+    flow with `flow_id`, `ts_ms`, `prediction`, `confidence`, `alert`,
+    `latency_us`. Sink = `LOG_FILE` env (append) else stderr — kept OFF stdout so
+    machine logs don't mix with human summaries.
+  - **Verified:** greppable (`grep '"prediction":1'` → attacks); sample line is
+    valid JSON with all fields. Wired into inference_server's per-flow loop.
 
 ---
 
@@ -307,6 +327,40 @@ resume-driven dead weight. Slots in after Phase 3 (needs a baseline to compare).
 ## Progress Log
 
 Durable record of what's been built (in case chat logs are lost). Newest first.
+
+### 2026-06-22 — Phase 4.3: structured logging (PHASE 4 COMPLETE)
+- `cpp/src/logging.h` `JsonLogger`: one compact JSON line per scored flow
+  (flow_id, ts_ms, prediction, confidence, alert, latency_us). Sink = LOG_FILE
+  env (append) else stderr; kept off stdout. Wired into inference_server loop.
+- Verified greppable (`grep '"prediction":1'`), valid JSON, all fields present.
+- Phase 4 done: metrics (Prometheus) + dashboards (Grafana) + structured logs.
+
+### 2026-06-22 — Phase 4.2: Grafana dashboard (dashboard-as-code)
+- Datasource uid pinned to `prometheus`; dashboard provider
+  (`infra/grafana/provisioning/dashboards/provider.yml`) loads
+  `.../json/ids.json` on startup. 6 panels: throughput, latency p50/p99, alert
+  rate (fired/suppressed), kafka lag, + 2 stats.
+- **Gotcha:** changing an already-provisioned datasource's uid → "data source
+  not found" and Grafana refused to start; fixed via `up -d --force-recreate
+  grafana` (no volume, so DB resets clean).
+- **Verified live** with a 30-pass replay loop + both services running:
+  rate(ids_scored_total[1m]) ramped to ~7,200/s; histogram_quantile p99 ~34µs
+  (matches 3.4); alert fire/suppress oscillated with the dedup TTL. Dashboard +
+  datasource confirmed via Grafana API.
+
+### 2026-06-22 — Phase 4.1: Prometheus metrics instrumentation
+- `prometheus-cpp` (vcpkg 1.3.0); `cpp/src/metrics.h` = exposer+registry helper
+  (METRICS_ADDR env). Pull model: each service serves /metrics; Prometheus scrapes.
+- inference_server (:9103): ids_scored_total, ids_alerts_fired_total,
+  ids_alerts_suppressed_total, ids_inference_latency_seconds (histogram, buckets
+  1µs–5ms). feature_consumer (:9102): ids_flows_ingested_total.
+- Infra: prometheus + grafana + kafka-exporter in docker-compose;
+  infra/prometheus.yml (scrapes host.docker.internal:9102/9103 + exporter:9308);
+  Grafana datasource auto-provisioned. Ports: Prometheus 9090, Grafana 3000.
+- **Verified:** /metrics serves real values (scored 23004, fired 79, suppressed
+  1512, latency hist p50~10µs/p99~25µs — matches 3.4); Prometheus target up;
+  PromQL ids_scored_total=23004; kafka-exporter up. (feature_consumer target is
+  down when that process isn't running — expected for pull scraping.)
 
 ### 2026-06-21 — Phase 3.5: gRPC alert stream (PHASE 3 COMPLETE)
 - `cpp/proto/alerts.proto` (proto3): FlowAlert msg + AlertStream service with

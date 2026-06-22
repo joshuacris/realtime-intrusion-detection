@@ -1,7 +1,9 @@
 #include "kafka_consumer.h"
 #include "kafka_producer.h"
 #include "feature_schema.h"
+#include "metrics.h"
 
+#include <prometheus/counter.h>
 #include <nlohmann/json.hpp>
 #include <atomic>
 #include <chrono>
@@ -26,6 +28,12 @@ int main() {
 
     KafkaConsumer consumer(brokers, "feature-consumer", "raw-flows");
     KafkaProducer producer(brokers, "model-ready-features");
+
+    // Prometheus metrics (served at :9102/metrics).
+    Metrics metrics("0.0.0.0:9102");
+    auto& flows_ingested = prometheus::BuildCounter()
+        .Name("ids_flows_ingested_total").Help("flows encoded to model-ready features")
+        .Register(*metrics.registry).Add({});
 
     printf("feature_consumer: reading raw-flows -> model-ready-features "
            "(broker %s)\n", brokers.c_str());
@@ -59,6 +67,7 @@ int main() {
             // Key by source IP (same partitioning choice as the extractor).
             producer.send(out["srcip"].get<std::string>(), out.dump());
             processed++;
+            flows_ingested.Increment();
 
             auto now = clk::now();
             if (processed == 1) t_first = now;   // start clock on first message
