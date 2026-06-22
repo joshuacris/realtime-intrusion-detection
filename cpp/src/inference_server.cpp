@@ -1,6 +1,7 @@
 #include "kafka_consumer.h"
 #include "kafka_producer.h"
 #include "onnx_model.h"
+#include "redis_dedup.h"
 
 #include <nlohmann/json.hpp>
 #include <atomic>
@@ -33,11 +34,20 @@ int main() {
     std::signal(SIGINT,  handle_signal);
     std::signal(SIGTERM, handle_signal);
 
+    // Redis dedup config (12-factor env, default localhost:6379, 60s window).
+    const char* rh = std::getenv("REDIS_HOST");
+    const std::string redis_host = rh ? rh : "localhost";
+    const int redis_port = std::getenv("REDIS_PORT")
+                         ? std::atoi(std::getenv("REDIS_PORT")) : 6379;
+
     OnnxModel model(model_path);
     KafkaConsumer consumer(brokers, "inference-server", "model-ready-features");
     KafkaProducer producer(brokers, "scored-flows");
+    RedisDedup dedup(redis_host, redis_port, 60 /* seconds */);
     printf("inference_server: model-ready-features -> scored-flows "
-           "(model %s, threshold %.2f)\n", model_path.c_str(), threshold);
+           "(model %s, threshold %.2f, dedup %s)\n",
+           model_path.c_str(), threshold,
+           dedup.enabled() ? "on" : "OFF (redis unavailable, fail-open)");
 
     constexpr std::size_t BATCH = 64;
     std::vector<float> feats;              // flat [count*58] feature buffer
@@ -45,7 +55,7 @@ int main() {
     feats.reserve(BATCH * OnnxModel::FEATURES);
     metas.reserve(BATCH);
 
-    long processed = 0, alerts = 0, errors = 0;
+    long processed = 0, alerts = 0, fired = 0, suppressed = 0, errors = 0;
 
     // Score the accumulated batch, publish a verdict per row, then clear.
     auto flush = [&]() {
@@ -61,12 +71,25 @@ int main() {
         for (std::size_t i = 0; i < n; ++i) {
             const int label = probs[i] >= threshold ? 1 : 0;
             nlohmann::json& m = metas[i];
+
+            // For attacks, dedup on (src,dst,proto): first in the 60s window
+            // fires (alert=true); repeats are suppressed (alert=false).
+            bool alert = false;
+            if (label == 1) {
+                alerts++;
+                const std::string key = "alert:" + m.value("srcip", std::string(""))
+                                      + ":" + m.value("dstip", std::string(""))
+                                      + ":" + m.value("proto", std::string(""));
+                alert = dedup.is_new_alert(key);
+                if (alert) fired++; else suppressed++;
+            }
+
             m["attack_prob"] = probs[i];
             m["label"]       = label;
+            m["alert"]       = alert;   // true only for NOVEL attacks (post-dedup)
             m["latency_us"]  = per_us;
             producer.send(m.value("srcip", std::string("")), m.dump());
             processed++;
-            if (label) alerts++;
         }
         feats.clear();
         metas.clear();
@@ -100,8 +123,9 @@ int main() {
     flush();
     producer.flush();
     consumer.close();
-    printf("\nshutting down: scored %ld, alerts %ld, errors %ld\n",
-           processed, alerts, errors);
+    printf("\nshutting down: scored %ld, attacks %ld "
+           "(fired %ld, suppressed %ld by dedup), errors %ld\n",
+           processed, alerts, fired, suppressed, errors);
     printf("kafka delivered: %llu  failed: %llu\n",
            (unsigned long long)producer.delivered(),
            (unsigned long long)producer.failed());

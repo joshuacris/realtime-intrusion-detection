@@ -46,6 +46,9 @@ find_package(nlohmann_json REQUIRED)
 #   RdKafka::rdkafka++  (C++ wrapper — what we #include and use)
 find_package(RdKafka CONFIG REQUIRED)
 
+# hiredis: minimal C Redis client (vcpkg) — used for alert deduplication.
+find_package(hiredis CONFIG REQUIRED)
+
 # --- Build targets ---
 
 # Create an executable called "flow_extractor" from our source files.
@@ -96,11 +99,13 @@ if(ONNXRUNTIME_INCLUDE_DIR AND ONNXRUNTIME_LIB)
     src/onnx_model.cpp
     src/kafka_consumer.cpp
     src/kafka_producer.cpp
+    src/redis_dedup.cpp
   )
   target_include_directories(inference_server PRIVATE ${ONNXRUNTIME_INCLUDE_DIR})
   target_link_libraries(inference_server PRIVATE
     nlohmann_json::nlohmann_json
     RdKafka::rdkafka++
+    hiredis::hiredis
     ${ONNXRUNTIME_LIB}
   )
 else()

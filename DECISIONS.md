@@ -166,6 +166,19 @@ measurement shows misclassification: B (cheap, big consistency win) then C
 (principled, heavy). This is the training/serving-skew risk first flagged in the
 1.4 validation, now made testable.
 
+### D19 — Alert dedup with Redis (shared TTL store), not an in-process map
+**Chosen:** dedup alerts via Redis `SET key 1 NX EX 60` (atomic check-and-claim
+with auto-expiry); key = `alert:src:dst:proto`.
+**Alternatives:** an in-process `unordered_map` with manual TTL; a Bloom filter;
+a relational DB.
+**Rationale:** dedup state must be SHARED — when inference scales to multiple
+instances (Phase 5), a per-process map would let each instance re-alert. Redis
+is in-memory (µs ops, off the hot path), has native TTL (the 60s window is free,
+no cleanup code), and is shared across instances. `SET NX EX` is a single atomic
+round-trip that's race-safe across instances (only one wins the NX). FAIL-OPEN
+on Redis failure (emit rather than drop — a duplicate alert beats a missed
+attack). Result: 1,591 raw attacks → 79 unique alerts (95% reduction).
+
 ### D18 — ONNX Runtime from Homebrew, not vcpkg
 **Chosen:** install ONNX Runtime via Homebrew (prebuilt bottle 1.27); find it in
 CMake with `find_library` (like libpcap).

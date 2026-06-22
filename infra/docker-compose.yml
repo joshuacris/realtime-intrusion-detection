@@ -44,6 +44,15 @@ services:
       - kafka-data:/var/lib/kafka/data                  # persist topics across restarts
 
   # ============================================================
+  # Redis — shared in-memory store for alert deduplication (3.3).
+  # ============================================================
+  redis:
+    image: redis:7-alpine        # tiny, fast; no config needed for our use
+    container_name: redis
+    ports:
+      - "6379:6379"              # host apps (inference server) connect here
+
+  # ============================================================
   # Web dashboard to see topics/messages in your browser.
   # ============================================================
   kafka-ui:

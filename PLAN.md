@@ -159,10 +159,16 @@ Live traffic (pcap / UNSW-NB15 replay)
     20,762 normal-host (59.166.x) flows. Training on Argus-distribution CSV does
     NOT break serving on our features. Inference latency ~12µs/flow (batched).
 
-- [ ] **3.3** Add Redis alert deduplication
-  - For each predicted attack, check Redis for a recent alert on the same src_ip/dst_ip/proto key
-  - TTL: 60 seconds (suppress duplicate alerts within a time window)
-  - Use `hiredis` C++ client
+- [x] **3.3** Add Redis alert deduplication ✅ DONE
+  - Redis added to docker-compose (redis:7-alpine). `hiredis` (vcpkg) wrapped in
+    `cpp/src/redis_dedup.{h,cpp}`.
+  - Per attack, atomic `SET alert:src:dst:proto 1 NX EX 60` → first in the 60s
+    window fires (alert=true), repeats suppressed (alert=false). FAIL-OPEN if
+    Redis is down (emit rather than drop an attack).
+  - scored-flows keeps the FULL record + an `alert` flag (audit trail intact;
+    3.5 gRPC will forward only alert=true).
+  - **Result:** 1,591 raw attacks → **79 fired / 1,512 suppressed (95% reduction)**;
+    Redis DBSIZE = 79 (matches), keys are the (attacker,victim,proto) triples.
 
 - [ ] **3.4** Benchmark inference throughput and latency
   - Target: p99 inference latency <1ms per flow at batch size 64
@@ -289,6 +295,15 @@ resume-driven dead weight. Slots in after Phase 3 (needs a baseline to compare).
 ## Progress Log
 
 Durable record of what's been built (in case chat logs are lost). Newest first.
+
+### 2026-06-21 — Phase 3.3: Redis alert dedup
+- Redis service in compose; `hiredis` (vcpkg 1.3.0). New
+  `cpp/src/redis_dedup.{h,cpp}`: atomic `SET key 1 NX EX 60` =
+  check-and-claim; STATUS"OK"→new alert, NIL→duplicate. Fail-open if Redis down.
+- inference_server: attacks deduped on (src,dst,proto); scored-flows record
+  gains `alert` bool; tracks fired/suppressed.
+- **Result:** 1,591 attacks → 79 fired / 1,512 suppressed (95% noise cut);
+  Redis DBSIZE=79 reconciles. Config via REDIS_HOST/REDIS_PORT env.
 
 ### 2026-06-21 — Phase 3.2: C++ ONNX inference server
 - ONNX Runtime via Homebrew (prebuilt 1.27, NOT vcpkg source build — D18).

@@ -97,6 +97,22 @@ KAFKA_BROKERS=localhost:9092 ./cpp/build/feature_consumer
   resume from the last committed offset.
 - Watch its consumer group + lag in the UI under **Consumers**.
 
+## Run the inference server
+
+Reads `model-ready-features`, scores each flow with the ONNX model (micro-batched),
+deduplicates alerts via Redis, and publishes verdicts to `scored-flows`.
+Requires the ONNX model (`scripts/export_onnx.py`) and Redis (in the compose stack).
+
+```bash
+KAFKA_BROKERS=localhost:9092 ./cpp/build/inference_server
+# optional env: MODEL_PATH, THRESHOLD, REDIS_HOST, REDIS_PORT
+```
+- Prints scored / attacks / fired / suppressed on Ctrl-C.
+- Output records carry `attack_prob`, `label`, `alert` (true only for novel
+  attacks after dedup), and `latency_us`.
+- `docker compose ... up -d` already starts Redis alongside Kafka; dedup
+  fails-open (still emits) if Redis is down.
+
 ---
 
 ## Kafka (Docker Compose)
