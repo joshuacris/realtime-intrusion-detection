@@ -108,6 +108,14 @@ if(ONNXRUNTIME_INCLUDE_DIR AND ONNXRUNTIME_LIB)
     hiredis::hiredis
     ${ONNXRUNTIME_LIB}
   )
+
+  # Standalone inference benchmark (no Kafka/Redis — just the model).
+  add_executable(bench_inference src/bench_inference.cpp src/onnx_model.cpp)
+  target_include_directories(bench_inference PRIVATE ${ONNXRUNTIME_INCLUDE_DIR})
+  target_link_libraries(bench_inference PRIVATE
+    nlohmann_json::nlohmann_json
+    ${ONNXRUNTIME_LIB}
+  )
 else()
   message(STATUS "onnxruntime not found — skipping inference_server "
                  "(run: brew install onnxruntime)")

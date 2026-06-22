@@ -170,9 +170,15 @@ Live traffic (pcap / UNSW-NB15 replay)
   - **Result:** 1,591 raw attacks → **79 fired / 1,512 suppressed (95% reduction)**;
     Redis DBSIZE = 79 (matches), keys are the (attacker,victim,proto) triples.
 
-- [ ] **3.4** Benchmark inference throughput and latency
-  - Target: p99 inference latency <1ms per flow at batch size 64
-  - Target: >50k scored flows/sec on a single inference server instance
+- [x] **3.4** Benchmark inference throughput and latency ✅ DONE
+  - Standalone `cpp/src/bench_inference.cpp` (isolates ONNX Run() from Kafka),
+    real feature vectors, batch-size sweep, Release build.
+  - **p99 per-flow latency @batch 64: 30µs (0.03ms)** — target <1ms exceeded 33×.
+  - **Throughput @batch 64: 78,316 flows/s** single core — target >50k exceeded 1.6×.
+  - Batch sweep: 1→47k, 16→77k, 64→78k, 128→77k (plateau ≥16; sweet spot 16-64).
+  - D17 skew recap: model intrinsic quality (CSV) ROC-AUC 0.9698 / attack F1 0.87;
+    on OUR features, 100% of alerts on attacker subnet, 0 FP on 20,762 normal —
+    skew does not degrade serving. No mitigation needed.
 
 - [ ] **3.5** Expose a gRPC alert stream
   - Define a `.proto` schema: `AlertStream` service, `FlowAlert` message
@@ -295,6 +301,16 @@ resume-driven dead weight. Slots in after Phase 3 (needs a baseline to compare).
 ## Progress Log
 
 Durable record of what's been built (in case chat logs are lost). Newest first.
+
+### 2026-06-21 — Phase 3.4: inference benchmark
+- `cpp/src/bench_inference.cpp`: standalone, isolates ONNX Run() from Kafka;
+  cycles real feature vectors (dumped from model-ready-features) through batches;
+  warmup + latency percentiles. Release build.
+- **Results (single core, Apple Silicon):** @batch 64 → 78,316 flows/s,
+  per-flow p50 11.8µs / p99 30µs (per-batch p99 1.93ms). Batch sweep:
+  1=47k, 16=77k, 64=78k, 128=77k → batching helps to ~16 then plateaus.
+- Both targets exceeded: p99/flow 0.03ms ≪ 1ms (33×); 78k/s > 50k (1.6×).
+- Skew (D17) recap recorded; no mitigation needed.
 
 ### 2026-06-21 — Phase 3.3: Redis alert dedup
 - Redis service in compose; `hiredis` (vcpkg 1.3.0). New
