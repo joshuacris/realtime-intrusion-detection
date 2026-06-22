@@ -40,3 +40,5 @@ cpp/CPP_TAKEAWAYS.md
 cpp/NETWORKING_TAKEAWAYS.md
 ACHIEVEMENTS.md
 PLAN.md
+# generated gRPC python stubs
+scripts/gen/

@@ -180,10 +180,16 @@ Live traffic (pcap / UNSW-NB15 replay)
     on OUR features, 100% of alerts on attacker subnet, 0 FP on 20,762 normal —
     skew does not degrade serving. No mitigation needed.
 
-- [ ] **3.5** Expose a gRPC alert stream
-  - Define a `.proto` schema: `AlertStream` service, `FlowAlert` message
-  - Stream predicted attacks to subscribers in real time
-  - Python test client that prints alerts to stdout
+- [x] **3.5** Expose a gRPC alert stream ✅ DONE
+  - `cpp/proto/alerts.proto`: `AlertStream` service, server-streaming
+    `Subscribe(SubscribeRequest) returns (stream FlowAlert)`. protoc codegen
+    wired into CMake (C++); grpc/protobuf via Homebrew (D21).
+  - `alert_gateway.cpp`: Kafka consumer THREAD (scored-flows, alert:true only)
+    → thread-safe fan-out (`alert_broadcaster.h`: mutex + condition_variable)
+    → gRPC server-stream per client. `scripts/alert_client.py` Python client.
+  - **Verified live, cross-language:** Python client received the 2 alert:true
+    messages streamed from the C++ gateway; the alert:false was filtered out.
+    Clean connect/disconnect lifecycle.
 
 ---
 
@@ -301,6 +307,24 @@ resume-driven dead weight. Slots in after Phase 3 (needs a baseline to compare).
 ## Progress Log
 
 Durable record of what's been built (in case chat logs are lost). Newest first.
+
+### 2026-06-21 — Phase 3.5: gRPC alert stream (PHASE 3 COMPLETE)
+- `cpp/proto/alerts.proto` (proto3): FlowAlert msg + AlertStream service with
+  server-streaming Subscribe. CMake add_custom_command runs protoc (+ grpc
+  plugin) → generated/alerts.pb.cc / alerts.grpc.pb.cc. grpc/protobuf via brew.
+- `cpp/src/alert_broadcaster.h`: thread-safe fan-out (ClientQueue with
+  mutex+condition_variable; AlertBroadcaster registry). First multithreading in
+  the project.
+- `cpp/src/alert_gateway.cpp` (4th executable): Kafka consumer thread reads
+  scored-flows, filters alert==true, publishes to broadcaster; gRPC server's
+  Subscribe() drains a per-client queue → writer->Write, honoring min_prob
+  filter + IsCancelled() for disconnect. Signal-safe shutdown via watcher thread.
+- `scripts/alert_client.py`: Python client (stubs via grpc_tools.protoc into
+  scripts/gen/, gitignored). Streams + prints alerts.
+- **Verified live:** injected 3 scored-flows (2 alert:true, 1 false); Python
+  client received exactly the 2 true alerts, false filtered. Cross-language
+  C++↔Python over gRPC/protobuf. (Gotcha: stdout block-buffers to a pipe —
+  output appears on flush/exit.)
 
 ### 2026-06-21 — Phase 3.4: inference benchmark
 - `cpp/src/bench_inference.cpp`: standalone, isolates ONNX Run() from Kafka;

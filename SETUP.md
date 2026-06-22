@@ -113,6 +113,25 @@ KAFKA_BROKERS=localhost:9092 ./cpp/build/inference_server
 - `docker compose ... up -d` already starts Redis alongside Kafka; dedup
   fails-open (still emits) if Redis is down.
 
+## Run the gRPC alert stream
+
+Requires `brew install grpc` (C++) and `pip install grpcio grpcio-tools` (client).
+
+```bash
+# 1. Start the gateway: consumes scored-flows (alert:true) -> gRPC stream
+KAFKA_BROKERS=localhost:9092 ./cpp/build/alert_gateway        # serves :50051
+
+# 2. Generate the Python client stubs once:
+.venv/bin/python -m grpc_tools.protoc -I cpp/proto \
+  --python_out=scripts/gen --grpc_python_out=scripts/gen cpp/proto/alerts.proto
+
+# 3. Run the client (optional min-probability filter):
+.venv/bin/python scripts/alert_client.py 0.0
+```
+Alerts produced by the inference server stream live to every connected client.
+(Note: backgrounded stdout block-buffers — use `python -u` to see client output
+live when piping.)
+
 ---
 
 ## Kafka (Docker Compose)
@@ -190,6 +209,90 @@ pkill -INT feature_consumer
 
 Reference results (single core, Apple Silicon, Release): producer ~74k msg/s,
 consumer ~82k msg/s sustained. See ACHIEVEMENTS.md (gitignored) for context.
+
+## Reproduce the full pipeline & Phase 3 results
+
+End-to-end data flow:
+```
+pcap → flow_extractor → raw-flows → feature_consumer → model-ready-features
+     → inference_server (ONNX + Redis dedup) → scored-flows → alert_gateway (gRPC) → clients
+```
+
+### Prerequisites (once)
+```bash
+docker compose -f infra/docker-compose.yml up -d   # Kafka + Redis + UI
+bash infra/create-topics.sh                          # raw-flows, model-ready-features, scored-flows
+.venv/bin/python scripts/export_onnx.py              # writes models/xgboost_intrusion.onnx
+# build (Debug for dev, build-release for benchmarks) — see "Build" above
+```
+The flow_extractor exits on its own after the pcap; the three services
+(feature_consumer, inference_server, alert_gateway) run until **Ctrl-C**. Run
+each in its own terminal and Ctrl-C once it has drained (watch its progress
+counter, or the topic offsets / Kafka UI).
+
+### Run it (one terminal per service)
+```bash
+B=localhost:9092
+# T1 — produce flows (exits when done): ~23,004 flows
+KAFKA_BROKERS=$B ./cpp/build/flow_extractor data/1.pcap
+# T2 — encode features (Ctrl-C when drained)
+KAFKA_BROKERS=$B ./cpp/build/feature_consumer
+# T3 — score + dedup (Ctrl-C when drained)
+KAFKA_BROKERS=$B ./cpp/build/inference_server
+# T4 — gRPC alert gateway (stays up)
+KAFKA_BROKERS=$B ./cpp/build/alert_gateway
+# T5 — alert client (stays up; prints alerts live)
+.venv/bin/python -u scripts/alert_client.py 0.0
+```
+Tip: to re-run a stage from scratch, rewind its consumer group
+(`kafka-consumer-groups.sh --reset-offsets --to-earliest --group <g> --topic <t> --execute`)
+and `docker exec redis redis-cli FLUSHALL` so dedup fires again.
+
+### Reproduce the specific results
+
+**3.1 — ONNX parity** (`.venv/bin/python scripts/export_onnx.py`):
+```
+native test ROC-AUC: 0.9698
+best threshold: 0.69
+PARITY  label match: 100.0000%   max prob diff: 4.77e-07
+```
+
+**3.2 — skew validation** (dump scored-flows, check attacker vs normal):
+```bash
+docker exec kafka /opt/kafka/bin/kafka-console-consumer.sh --bootstrap-server localhost:9092 \
+  --topic scored-flows --from-beginning --max-messages 23004 --timeout-ms 15000 > /tmp/scored.jsonl
+.venv/bin/python - <<'PY'
+import json; rows=[json.loads(l) for l in open('/tmp/scored.jsonl')]
+atk=[r for r in rows if r['srcip'].startswith('175.45.176.') or r['dstip'].startswith('175.45.176.')]
+nrm=[r for r in rows if r['srcip'].startswith('59.166.') or r['dstip'].startswith('59.166.')]
+print('attacker flagged:', sum(r['label'] for r in atk), '/', len(atk))
+print('normal   flagged:', sum(r['label'] for r in nrm), '/', len(nrm))
+PY
+# expected: ALL alerts on attacker subnet; 0 on normal hosts
+```
+
+**3.3 — Redis dedup** (inference_server shutdown line):
+```
+shutting down: scored 23004, attacks 1591 (fired 79, suppressed 1512 by dedup), errors 0
+# docker exec redis redis-cli DBSIZE  -> 79 (matches fired)
+```
+
+**3.4 — inference benchmark** (Release build):
+```bash
+docker exec kafka /opt/kafka/bin/kafka-console-consumer.sh --bootstrap-server localhost:9092 \
+  --topic model-ready-features --from-beginning --max-messages 2000 --timeout-ms 15000 > /tmp/mrf.jsonl
+./cpp/build-release/bench_inference models/xgboost_intrusion.onnx 64 5000 /tmp/mrf.jsonl
+# expected: throughput ~78k flows/s; per-flow p99 ~30us (<1ms target)
+```
+
+**3.5 — gRPC alert stream** (gateway + client up, then produce/inject alerts):
+```bash
+# inject a test alert into scored-flows; the connected client prints it:
+echo '{"srcip":"175.45.176.2","sport":13284,"dstip":"149.171.126.16","dsport":80,"proto":"tcp","attack_prob":0.99,"label":1,"alert":true,"latency_us":12}' \
+  | docker exec -i kafka /opt/kafka/bin/kafka-console-producer.sh --bootstrap-server localhost:9092 --topic scored-flows
+# client shows: ALERT 175.45.176.2:13284 -> 149.171.126.16:80 tcp prob=0.990 ...
+# (alert:false messages are filtered out)
+```
 
 ## Shutting down & resuming (e.g. rebooting your Mac)
 

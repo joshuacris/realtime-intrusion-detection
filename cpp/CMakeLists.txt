@@ -120,3 +120,48 @@ else()
   message(STATUS "onnxruntime not found — skipping inference_server "
                  "(run: brew install onnxruntime)")
 endif()
+
+# Fourth executable: the gRPC alert gateway. gRPC + protobuf come from Homebrew
+# (brew install grpc), NOT vcpkg (huge source build). Guarded so the project
+# still builds without them.
+find_package(Protobuf CONFIG QUIET)
+find_package(gRPC CONFIG QUIET)
+find_package(Threads REQUIRED)
+
+if(gRPC_FOUND AND Protobuf_FOUND)
+  # --- Generate C++ code from alerts.proto at build time ---
+  set(PROTO_FILE   ${CMAKE_CURRENT_SOURCE_DIR}/proto/alerts.proto)
+  set(PROTO_GEN    ${CMAKE_CURRENT_BINARY_DIR}/generated)
+  file(MAKE_DIRECTORY ${PROTO_GEN})
+  set(PB_SRC   ${PROTO_GEN}/alerts.pb.cc)
+  set(GRPC_SRC ${PROTO_GEN}/alerts.grpc.pb.cc)
+
+  add_custom_command(
+    OUTPUT ${PB_SRC} ${PROTO_GEN}/alerts.pb.h
+           ${GRPC_SRC} ${PROTO_GEN}/alerts.grpc.pb.h
+    COMMAND protobuf::protoc
+    ARGS --proto_path=${CMAKE_CURRENT_SOURCE_DIR}/proto
+         --cpp_out=${PROTO_GEN}
+         --grpc_out=${PROTO_GEN}
+         --plugin=protoc-gen-grpc=$<TARGET_FILE:gRPC::grpc_cpp_plugin>
+         ${PROTO_FILE}
+    DEPENDS ${PROTO_FILE}
+    COMMENT "protoc: generating alerts.pb / alerts.grpc.pb")
+
+  add_executable(alert_gateway
+    src/alert_gateway.cpp
+    src/kafka_consumer.cpp
+    ${PB_SRC} ${GRPC_SRC}
+  )
+  target_include_directories(alert_gateway PRIVATE ${PROTO_GEN})
+  target_link_libraries(alert_gateway PRIVATE
+    nlohmann_json::nlohmann_json
+    RdKafka::rdkafka++
+    gRPC::grpc++
+    protobuf::libprotobuf
+    Threads::Threads
+  )
+else()
+  message(STATUS "gRPC/Protobuf not found — skipping alert_gateway "
+                 "(run: brew install grpc)")
+endif()

@@ -166,6 +166,27 @@ measurement shows misclassification: B (cheap, big consistency win) then C
 (principled, heavy). This is the training/serving-skew risk first flagged in the
 1.4 validation, now made testable.
 
+### D20 — Alert API via gRPC server-streaming, not REST/WebSocket/raw Kafka
+**Chosen:** expose alerts through a gRPC `AlertStream` service (server-streaming
+RPC defined in `alerts.proto`); clients subscribe and the server pushes alerts.
+**Alternatives:** let external clients read Kafka directly; REST + polling;
+WebSocket.
+**Rationale:** Kafka is the internal bus — external subscribers shouldn't couple
+to it (offsets, no contract, not client/firewall friendly). REST polling isn't
+real-time; WebSocket lacks a typed schema/codegen. gRPC gives a typed `.proto`
+contract, native server-push streaming, HTTP/2 efficiency, and cross-language
+codegen (verified C++ server ↔ Python client). It's the standard for typed
+streaming APIs.
+
+### D21 — gRPC + Protobuf from Homebrew, not vcpkg
+**Chosen:** `brew install grpc` (prebuilt; pulls protobuf, abseil, etc.); CMake
+`find_package(gRPC CONFIG)` + protoc codegen via `add_custom_command`.
+**Alternative:** vcpkg grpc/protobuf.
+**Rationale:** same as D18 (ONNX Runtime) — vcpkg would build grpc + protobuf +
+abseil + re2 + c-ares from source (20–40 min, fragile). Brew bottles install in
+seconds. Pattern: heavyweight C++ libs with good brew bottles → brew; small/
+niche libs (librdkafka, hiredis, nlohmann) → vcpkg.
+
 ### D19 — Alert dedup with Redis (shared TTL store), not an in-process map
 **Chosen:** dedup alerts via Redis `SET key 1 NX EX 60` (atomic check-and-claim
 with auto-expiry); key = `alert:src:dst:proto`.

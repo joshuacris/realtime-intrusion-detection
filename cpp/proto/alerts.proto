@@ -1,0 +1,36 @@
+// alerts.proto — the contract for the real-time alert stream.
+// Both the C++ gateway (server) and the Python client generate code from THIS
+// file via protoc, so they always agree on the wire format.
+
+syntax = "proto3";          // use proto3 (the modern protobuf dialect)
+
+package ids;                // namespace: ids::FlowAlert / ids.FlowAlert (py)
+
+// One intrusion alert = a deduplicated attack flow.
+// The "= N" after each field is its FIELD NUMBER — the tag used on the binary
+// wire. Field numbers (not names, not order) identify fields, so they must be
+// unique and stable forever (never renumber/reuse a number, or you break
+// compatibility with already-serialized data).
+message FlowAlert {
+  string srcip       = 1;
+  uint32 sport       = 2;
+  string dstip       = 3;
+  uint32 dsport      = 4;
+  string proto       = 5;
+  float  attack_prob = 6;
+  int64  latency_us  = 7;
+}
+
+// What a client sends to start a subscription. Carries an optional filter so a
+// client can ask for only high-confidence alerts (defaults to 0 = everything).
+message SubscribeRequest {
+  float min_prob = 1;
+}
+
+// The alert service.
+service AlertStream {
+  // Server-STREAMING RPC: client sends ONE SubscribeRequest, then the server
+  // sends back a continuous STREAM of FlowAlerts (the `stream` keyword on the
+  // return type) over one long-lived connection.
+  rpc Subscribe(SubscribeRequest) returns (stream FlowAlert);
+}
