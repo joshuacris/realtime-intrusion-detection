@@ -143,7 +143,7 @@ live when piping.)
 ## Kafka (Docker Compose)
 
 Single-node Kafka in **KRaft** mode (no ZooKeeper) + a web UI. Config:
-[infra/docker-compose.yml](infra/docker-compose.yml).
+[infra/docker-compose.yml](../infra/docker-compose.yml).
 
 ### Start
 

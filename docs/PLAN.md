@@ -391,6 +391,27 @@ parallel. Distributing THAT across the k8s cluster is honest and useful.
 
 Durable record of what's been built (in case chat logs are lost). Newest first.
 
+### 2026-06-23 — final benchmark pass + README + dashboard capture
+- **Authoritative benchmarks** (single core, Apple Silicon, Release `-O3`,
+  best-of-3, each stage isolated), recorded in `docs/ACHIEVEMENTS.md` and the
+  README Benchmarks table:
+  - Flow extraction: **4.19M pkts/s (2.22 GB/s)**.
+  - Kafka producer (pcap→Kafka): **~74k msg/s**.
+  - Feature consumer: **~80k msg/s** (79,991).
+  - ONNX inference: **batch 64 = 90,139 flows/s, p50 10.8µs / p99 16.6µs**;
+    batch 128 = 92,526 flows/s, p99 15.4µs (knee at batch 64).
+  - XGBoost→ONNX parity: 100% labels (max prob diff 4.8e-7).
+  - Alert dedup: 95% reduction (e.g. 1,591→79 one pass; 7,955→79 over 115k msgs).
+- **Grafana dashboard captured live** via a continuous pcap-replay loop (Redis
+  flushed every 6 passes for a recurring fired/suppressed sawtooth). Portfolio
+  screenshot saved to `docs/img/grafana-overview.png`; README now has a "Live
+  dashboard" section referencing it. Confirmed all panels live (throughput
+  ~25k/s under replay, p50 ~15µs / p99 ~25µs, suppressed plateau, kafka lag
+  drain). Noted the dead `alert-gateway` lag series (consumer not running, D26).
+- **README:** added Benchmarks table + reproduce commands (incl. the
+  `bench_inference` micro-benchmark) and the dashboard screenshot; updated the
+  Highlights inference row to the final 90k/p99~17µs numbers.
+
 ### 2026-06-23 — fixes: CI arch + docs relocation
 - **CI fix:** Dockerfile hardcoded the aarch64 ONNX Runtime tarball → on the
   amd64 GitHub Actions runner the inference_server link failed
@@ -642,12 +663,12 @@ Durable record of what's been built (in case chat logs are lost). Newest first.
 ### 2026-06-09 — Task 1.3e: derived features
 - Added 12 derived features to the JSON output (now **26 fields/flow**):
   - Ratios (from counters): `smean`, `dmean`, `sload`/`dload` (bits/s), `rate` (pkts/s).
-  - Timing (new per-direction state in [flow.h](cpp/src/flow.h) FlowState):
+  - Timing (new per-direction state in [flow.h](../cpp/src/flow.h) FlowState):
     `sinpkt`/`dinpkt` (mean gap, ms), `sjit`/`djit` (jitter = mean |Δgap|, ms).
   - Handshake (SYN / SYN-ACK / ACK timestamps): `synack`, `ackdat`, `tcprtt` (s).
-- [flow_aggregator.cpp](cpp/src/flow_aggregator.cpp) maintains inter-arrival,
+- [flow_aggregator.cpp](../cpp/src/flow_aggregator.cpp) maintains inter-arrival,
   jitter, and handshake-timestamp accumulators in `add_packet`; computation done
-  at emit time in [flow_json.h](cpp/src/flow_json.h). All divisions guarded.
+  at emit time in [flow_json.h](../cpp/src/flow_json.h). All divisions guarded.
 - **Validated** the math against a real HTTP flow (smean/sload/rate/tcprtt all
   matched hand calc). 17,662/40,666 flows have a full handshake; median
   tcprtt 0.72 ms. Run unchanged: 1.8M pkts → 40,666 flows in ~1.9s.
@@ -658,11 +679,11 @@ Durable record of what's been built (in case chat logs are lost). Newest first.
   **idle timeout** (periodic sweep, every 500k pkts), and `flush()` emits all
   remaining flows at EOF. Emitted via sink, then erased (bounds memory for the
   live stream).
-- New [cpp/src/flow_json.h](cpp/src/flow_json.h): `flow_to_json()` →
+- New [cpp/src/flow_json.h](../cpp/src/flow_json.h): `flow_to_json()` →
   nlohmann::json with UNSW field names (srcip/sport/dstip/dsport/proto/dur/
-  spkts/dpkts/sbytes/dbytes/sttl/dttl/swin/dwin). [main.cpp](cpp/src/main.cpp)
+  spkts/dpkts/sbytes/dbytes/sttl/dttl/swin/dwin). [main.cpp](../cpp/src/main.cpp)
   writes **JSON Lines** to `flows.jsonl` (or argv[2]).
-- TCP flag constants added to [flow.h](cpp/src/flow.h). `*.jsonl` gitignored.
+- TCP flag constants added to [flow.h](../cpp/src/flow.h). `*.jsonl` gitignored.
 - Added `CMAKE_EXPORT_COMPILE_COMMANDS ON` → build/compile_commands.json (fixes
   VS Code IntelliSense header resolution; user points c_cpp_properties at it).
 - **Result on `data/1.pcap`:** 1,800,166 pkts → **40,666 flows** in ~1.9s, all
@@ -671,8 +692,8 @@ Durable record of what's been built (in case chat logs are lost). Newest first.
   Breakdown: tcp 35,334 · udp 5,330 · icmp 2; 226 no-reply (scan-like) flows.
 
 ### 2026-06-08 — Task 1.3c: aggregator loop
-- New [cpp/src/flow_aggregator.h](cpp/src/flow_aggregator.h) +
-  [.cpp](cpp/src/flow_aggregator.cpp): `FlowAggregator` **class** (private
+- New [cpp/src/flow_aggregator.h](../cpp/src/flow_aggregator.h) +
+  [.cpp](../cpp/src/flow_aggregator.cpp): `FlowAggregator` **class** (private
   `unordered_map<FlowKey,FlowState,FlowKeyHash>`, exposed via `add_packet()`,
   `flow_count()`, `flows()`). `add_packet` get-or-creates the FlowState via
   `flows_[key]` (reference), sets the source/initiator on the first packet, then
@@ -680,7 +701,7 @@ Durable record of what's been built (in case chat logs are lost). Newest first.
 - Added `ip_total_len` to `Packet` (IP datagram bytes) → used for sbytes/dbytes.
   (Byte semantics = IP-layer bytes; may revisit vs Argus for exactness, fine for
   model-input matching.)
-- [main.cpp](cpp/src/main.cpp) now streams packets into the aggregator and prints
+- [main.cpp](../cpp/src/main.cpp) now streams packets into the aggregator and prints
   a sample of flows (structured-binding loop).
 - **Result on `data/1.pcap`:** 1,800,166 packets → **22,969 flows** in ~1.1s.
   Bidirectional grouping verified (one flow holds both spkts & dpkts);
@@ -688,9 +709,9 @@ Durable record of what's been built (in case chat logs are lost). Newest first.
 
 ### 2026-06-08 — Task 1.3a + 1.3b: flow types
 - **1.3a:** Added `ttl` (IP header byte 8) and `tcp_window` (TCP bytes 14–15) to
-  `Packet` in [cpp/src/packet.h](cpp/src/packet.h); populated in
-  [cpp/src/pcap_reader.cpp](cpp/src/pcap_reader.cpp). These feed sttl/dttl/swin/dwin.
-- **1.3b:** New [cpp/src/flow.h](cpp/src/flow.h) defining:
+  `Packet` in [cpp/src/packet.h](../cpp/src/packet.h); populated in
+  [cpp/src/pcap_reader.cpp](../cpp/src/pcap_reader.cpp). These feed sttl/dttl/swin/dwin.
+- **1.3b:** New [cpp/src/flow.h](../cpp/src/flow.h) defining:
   - `FlowKey` — canonical (direction-independent) 5-tuple + `operator==`;
     `make_flow_key()` orders endpoints (smaller first) so A→B and B→A collapse
     to one key. Verified: both directions hash to the same bucket (map size 1).
@@ -700,12 +721,12 @@ Durable record of what's been built (in case chat logs are lost). Newest first.
 - Builds clean. flow.h validated via throwaway include + `clang++`.
 
 ### 2026-06-07 — Task 1.2: pcap reader
-- Built [cpp/src/pcap_reader.cpp](cpp/src/pcap_reader.cpp) (+`.h`) and
-  [cpp/src/packet.h](cpp/src/packet.h): opens a pcap with libpcap, detects link
+- Built [cpp/src/pcap_reader.cpp](../cpp/src/pcap_reader.cpp) (+`.h`) and
+  [cpp/src/packet.h](../cpp/src/packet.h): opens a pcap with libpcap, detects link
   type (our capture is **Linux SLL / 16-byte header**, not Ethernet), peels
   SLL → IPv4 → TCP/UDP/ICMP by hand, emits `Packet` structs via a
   `std::function` callback.
-- Driver [cpp/src/main.cpp](cpp/src/main.cpp) takes a pcap path, counts packets.
+- Driver [cpp/src/main.cpp](../cpp/src/main.cpp) takes a pcap path, counts packets.
 - **Result on `data/1.pcap`:** parsed **1,800,166 packets in ~1.6s** (~1.1M
   pkts/sec, 1 core). TCP 1,772,972 · UDP 27,125 · ICMP 69.
 - **Validated against `tcpdump`:** skipped protocols (OSPF, ARP) and ICMP length
@@ -713,13 +734,13 @@ Durable record of what's been built (in case chat logs are lost). Newest first.
   victim 149.171.126.x).
 
 ### 2026-06-07 — Task 1.1: build system
-- Created `cpp/` with [CMakeLists.txt](cpp/CMakeLists.txt) (CMake + vcpkg
-  toolchain) and [vcpkg.json](cpp/vcpkg.json) (deps: `nlohmann-json`; libpcap via
+- Created `cpp/` with [CMakeLists.txt](../cpp/CMakeLists.txt) (CMake + vcpkg
+  toolchain) and [vcpkg.json](../cpp/vcpkg.json) (deps: `nlohmann-json`; libpcap via
   Homebrew). Target `flow_extractor`. C++17, `-Wall -Wextra`.
 - vcpkg installed at `~/Desktop/vcpkg`. Build: `cmake -B build -S .
   -DCMAKE_TOOLCHAIN_FILE=$VCPKG_ROOT/scripts/buildsystems/vcpkg.cmake` then
   `cmake --build build`.
-- Added [.gitignore](.gitignore): ignores `cpp/build/`, data/`*.pcap`, ML
+- Added [.gitignore](../.gitignore): ignores `cpp/build/`, data/`*.pcap`, ML
   artifacts, and the two personal notes files (CPP_TAKEAWAYS.md,
   NETWORKING_TAKEAWAYS.md).
 
