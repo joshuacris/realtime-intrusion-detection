@@ -5,10 +5,6 @@ that parses packets into flows, a Kafka streaming backbone, an ONNX-served
 XGBoost model, alert deduplication + a gRPC alert stream, full observability, and
 a Kubernetes deployment with event-driven autoscaling.
 
-It started as an offline ML comparison study on the UNSW-NB15 dataset
-(LR / MLP / Random Forest / XGBoost) and was rebuilt into a streaming system that
-scores live traffic.
-
 ## Architecture
 
 ```
@@ -149,10 +145,3 @@ KAFKA_BROKERS=localhost:9092 ./cpp/build-release/inference_server   # Ctrl-C to 
 - **[docs/PLAN.md](docs/PLAN.md)** — phased roadmap + a dated progress log of everything built.
 - **[docs/DECISIONS.md](docs/DECISIONS.md)** — architecture decisions (with alternatives + rationale) and the notable engineering challenges + fixes.
 - **[docs/SETUP.md](docs/SETUP.md)** — prerequisites, build, run, observability, k8s deploy, reproduction.
-
-## Status
-
-Core system (Phases 1–5) complete: C++ flow extractor → Kafka streaming → ONNX
-inference + dedup + gRPC alerts → Prometheus/Grafana observability → Kubernetes
-deployment + CI. Optional tracks (a JAX/TF-Serving deep-learning path; distributed
-hyperparameter optimization) are scoped in [docs/PLAN.md](docs/PLAN.md).
