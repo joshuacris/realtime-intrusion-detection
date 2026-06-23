@@ -18,14 +18,24 @@ RUN git clone --depth 1 https://github.com/microsoft/vcpkg /opt/vcpkg \
  && /opt/vcpkg/bootstrap-vcpkg.sh -disableMetrics
 ENV VCPKG_ROOT=/opt/vcpkg
 
-# ONNX Runtime: Microsoft's prebuilt Linux arm64 tarball (no source build).
+# ONNX Runtime: Microsoft's prebuilt Linux tarball (no source build).
+# Pick the arch from buildx's TARGETARCH so this builds on both arm64 (local
+# Apple Silicon) AND amd64 (GitHub Actions runners) — a hardcoded arch fails to
+# link with "file in wrong format" on the other platform.
 ARG ORT_VERSION=1.20.1
-RUN curl -fsSL \
-      https://github.com/microsoft/onnxruntime/releases/download/v${ORT_VERSION}/onnxruntime-linux-aarch64-${ORT_VERSION}.tgz \
-      -o /tmp/ort.tgz \
- && mkdir -p /opt/onnxruntime \
- && tar -xzf /tmp/ort.tgz -C /opt/onnxruntime --strip-components=1 \
- && rm /tmp/ort.tgz
+ARG TARGETARCH
+RUN set -eux; \
+    case "$TARGETARCH" in \
+      arm64) ORT_ARCH=aarch64 ;; \
+      amd64) ORT_ARCH=x64 ;; \
+      *) echo "unsupported TARGETARCH: $TARGETARCH" >&2; exit 1 ;; \
+    esac; \
+    curl -fsSL \
+      "https://github.com/microsoft/onnxruntime/releases/download/v${ORT_VERSION}/onnxruntime-linux-${ORT_ARCH}-${ORT_VERSION}.tgz" \
+      -o /tmp/ort.tgz; \
+    mkdir -p /opt/onnxruntime; \
+    tar -xzf /tmp/ort.tgz -C /opt/onnxruntime --strip-components=1; \
+    rm /tmp/ort.tgz
 
 WORKDIR /app/cpp
 # Manifest first (caches the slow vcpkg dependency build across source edits).

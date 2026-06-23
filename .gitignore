@@ -36,9 +36,9 @@ data/
 *.swp
 
 # ── Personal notes ─────────────────────────────────────────────────
-cpp/CPP_TAKEAWAYS.md
-cpp/NETWORKING_TAKEAWAYS.md
-ACHIEVEMENTS.md
+docs/CPP_TAKEAWAYS.md
+docs/NETWORKING_TAKEAWAYS.md
+docs/ACHIEVEMENTS.md
 # generated gRPC python stubs
 scripts/gen/
 .claude/

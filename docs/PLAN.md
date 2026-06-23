@@ -391,6 +391,16 @@ parallel. Distributing THAT across the k8s cluster is honest and useful.
 
 Durable record of what's been built (in case chat logs are lost). Newest first.
 
+### 2026-06-23 — fixes: CI arch + docs relocation
+- **CI fix:** Dockerfile hardcoded the aarch64 ONNX Runtime tarball → on the
+  amd64 GitHub Actions runner the inference_server link failed
+  (`libonnxruntime.so: file in wrong format`). Now selects the ORT arch from
+  buildx `TARGETARCH` (arm64→aarch64, amd64→x64) so it builds on both. Local
+  arm64 (kind) unaffected.
+- **Docs moved to `docs/`:** all .md now live in `docs/`. `.gitignore` updated
+  (docs/CPP_TAKEAWAYS.md, docs/NETWORKING_TAKEAWAYS.md, docs/ACHIEVEMENTS.md);
+  memory references updated.
+
 ### 2026-06-23 — Phase 5.5: CI/CD (PHASE 5 COMPLETE)
 - `.github/workflows/ci.yml`: helm-lint (lint + template) + cpp-build (Dockerfile
   `build` stage → Linux compile of all binaries, GHA-cached). On push/PR.
