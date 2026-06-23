@@ -248,6 +248,53 @@ computes p50/p99 across instances and time windows cheaply — without storing
 every sample. (A gauge loses the distribution; a "summary" computes quantiles
 client-side and can't be aggregated across instances.)
 
+### D25 — One consolidated container image, not per-service images
+**Chosen:** a single multi-stage `Dockerfile` building all core binaries into one
+`ids:dev` image; each k8s Deployment selects its binary via `command:`. Build and
+runtime stages both `debian:bookworm` (glibc match). ONNX Runtime from Microsoft's
+prebuilt Linux tarball; other deps from vcpkg (source).
+**Alternatives:** a Dockerfile per service (4 images); ONNX Runtime via vcpkg.
+**Rationale:** per-service images each repeat the slow vcpkg build (4×); one
+builder amortizes it and yields a single image to version/push. Multi-stage keeps
+the runtime slim (binary + libs only, no toolchain). ONNX Runtime via tarball
+avoids a massive source build. Matching glibc across stages avoids
+"GLIBC_x not found" at runtime. **The C++ must be compiled INSIDE the Linux
+container** — a macOS (Mach-O) binary can't run in a Linux container.
+
+### D26 — Defer alert_gateway (gRPC) from the k8s deployment
+**Chosen:** containerize/deploy the core pipeline (extractor, feature_consumer,
+inference_server) + KEDA; keep alert_gateway/gRPC as a local (compose) service.
+**Rationale:** gRPC + protobuf have no clean prebuilt path in a Debian container
+(apt lacks the CMake config; vcpkg-grpc is a 20–40 min source build pulling
+abseil/re2/c-ares). The Phase 5 payoff — autoscaling on Kafka lag — needs only
+feature_consumer + inference_server. The gRPC edge API isn't on the scaling path,
+so excluding it removes a large build cost for no loss to the demo. Revisit if a
+fully in-cluster alert API is wanted (then bite the vcpkg-grpc build).
+
+### D27 — In-cluster infra via our own manifests (not Bitnami), one app chart
+**Chosen:** deploy Kafka + Redis *inside* the kind cluster using simple
+single-node manifests we write, in one Helm chart that also deploys our services;
+Kafka uses a single listener advertised as the Service name `kafka:9092`.
+**Alternatives:** point in-cluster services at the host's Compose Kafka/Redis;
+use Bitnami Helm charts for Kafka/Redis; a chart per service.
+**Rationale:** a self-contained cluster is the cleaner k8s demo (KEDA can reach
+Kafka directly), and writing the manifests ourselves is more educational + dodges
+Bitnami's recent image-hosting/licensing changes. In-cluster-only means Kafka
+needs just ONE listener (advertised as the Service DNS name) — no host/docker
+dual-listener gymnastics. One app chart (vs per-service) keeps shared config
+(ConfigMap) and the deploy in one place.
+
+### D28 — KEDA for lag-based autoscaling (not stock HPA)
+**Chosen:** autoscale inference-server with a KEDA `ScaledObject` driven by Kafka
+consumer-group lag (min 1, max 10, lagThreshold 1000/replica).
+**Alternatives:** stock HPA on CPU/memory; manual scaling.
+**Rationale:** the right scaling signal for a stream processor is **backlog**, not
+CPU — inference is cheap (12µs/flow), so CPU would barely move while lag explodes.
+Stock HPA can't read Kafka lag; KEDA's built-in Kafka scaler does, and it
+generates the underlying HPA for us. This is the payoff that connects Phase 2
+(consumer groups), Phase 4 (the lag metric), and Phase 3 (stateless inference):
+backlog up → more pods → backlog drains → scale down.
+
 ---
 
 ## Major Challenges & Resolutions
@@ -285,6 +332,21 @@ Unaligned reads (→ `memcpy`), byte order (→ `ntohs/ntohl`), variable header
 lengths (→ read IHL/data-offset, never hardcode), unsigned underflow (→ clamp),
 sequence-number wraparound (→ signed-difference compare), integer division
 truncation (→ cast to double).
+
+### C8 — Kubernetes deployment (kind)
+Three real issues hit deploying the stack to kind: (1) **KRaft controller
+crash-loop** — the controller quorum voter `1@kafka:9093` routed through the
+Service, which only exposes 9092, so the broker couldn't reach its own controller
+and exited; fixed with `1@localhost:9093` (single node talks to itself).
+(2) **Cross-namespace Kafka resolution** — KEDA (in the `keda` namespace) bootstrapped
+via FQDN but then followed the broker's advertised `kafka:9092`, which bare-name
+doesn't resolve outside `default`; fixed by advertising the **FQDN**
+`kafka.default.svc.cluster.local:9092`. (3) **Autoscale 1→N didn't render** — KEDA's
+kafka scaler under-reported lag (3k vs real ~5M) in this env, and our inference
+is fast enough that one replica drains backlogs before the HPA reacts. The
+mechanism is sound (KEDA verifiably scales 0→1 on lag); the full ramp is an open
+follow-up — not an architectural flaw. Honest lesson: a system efficient enough
+to not *need* scaling makes scaling hard to *demonstrate*.
 
 ### C7 — Tooling / process
 The `~/.zshrc` recursion incident (→ route config/CLI changes through the user);

@@ -1,0 +1,11 @@
+# Shared config injected into our service pods as env vars (12-factor).
+# Service names (kafka, redis) resolve via in-cluster DNS.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: ids-config
+data:
+  KAFKA_BROKERS: "kafka:9092"
+  REDIS_HOST: "redis"
+  REDIS_PORT: "6379"
+  MODEL_PATH: "/models/xgboost_intrusion.onnx"

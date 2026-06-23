@@ -1,0 +1,15 @@
+# Keep the Docker build context small — only ship source, not data/builds/venvs.
+.git
+data/
+cpp/build*
+cpp/vcpkg_installed
+vcpkg_installed
+.venv
+models/
+scripts/gen/
+notebooks/
+*.jsonl
+*.onnx
+# ...but DO bake the trained model + threshold into the inference image:
+!models/xgboost_intrusion.onnx
+!models/threshold.txt

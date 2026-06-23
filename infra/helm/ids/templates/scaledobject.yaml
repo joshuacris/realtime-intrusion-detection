@@ -1,0 +1,27 @@
+{{- if .Values.keda.enabled }}
+# KEDA ScaledObject: autoscale inference-server on Kafka consumer-group lag.
+# KEDA reads the lag of group `inference-server` on `model-ready-features` and
+# drives an HPA: more lag -> more pods (up to maxReplicas), draining -> back down.
+# (Requires the KEDA operator + CRDs installed in the cluster — see 5.4.)
+apiVersion: keda.sh/v1alpha1
+kind: ScaledObject
+metadata:
+  name: inference-server
+spec:
+  scaleTargetRef:
+    name: inference-server        # the Deployment KEDA scales
+  minReplicaCount: {{ .Values.keda.minReplicas }}
+  maxReplicaCount: {{ .Values.keda.maxReplicas }}
+  pollingInterval: {{ .Values.keda.pollingInterval }}   # how often to sample lag
+  cooldownPeriod: 30             # seconds of low lag before scaling back down
+  triggers:
+    - type: kafka
+      metadata:
+        # FQDN: the KEDA operator runs in the `keda` namespace, so a bare
+        # `kafka` wouldn't resolve — it needs the fully-qualified service name.
+        bootstrapServers: kafka.default.svc.cluster.local:9092
+        consumerGroup: inference-server
+        topic: model-ready-features
+        lagThreshold: "{{ .Values.keda.lagThreshold }}"
+        offsetResetPolicy: earliest
+{{- end }}

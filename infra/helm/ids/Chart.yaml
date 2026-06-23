@@ -1,0 +1,6 @@
+apiVersion: v2
+name: ids
+description: Real-time intrusion detection pipeline (extractor → Kafka → encode → ONNX inference)
+type: application
+version: 0.1.0
+appVersion: "0.1.0"

@@ -1,0 +1,22 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: inference-server
+  labels: { app: inference-server }
+spec:
+  replicas: {{ .Values.inferenceServer.replicas }}      # KEDA overrides this (5.3)
+  selector:
+    matchLabels: { app: inference-server }
+  template:
+    metadata:
+      labels: { app: inference-server }
+    spec:
+      containers:
+        - name: inference-server
+          image: "{{ .Values.image.repository }}:{{ .Values.image.tag }}"
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          command: ["/usr/local/bin/inference_server"]
+          envFrom:
+            - configMapRef: { name: ids-config }          # KAFKA_BROKERS, REDIS_HOST, MODEL_PATH
+          ports:
+            - containerPort: 9103                          # /metrics

@@ -1,0 +1,22 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: feature-consumer
+  labels: { app: feature-consumer }
+spec:
+  replicas: {{ .Values.featureConsumer.replicas }}
+  selector:
+    matchLabels: { app: feature-consumer }
+  template:
+    metadata:
+      labels: { app: feature-consumer }
+    spec:
+      containers:
+        - name: feature-consumer
+          image: "{{ .Values.image.repository }}:{{ .Values.image.tag }}"
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          command: ["/usr/local/bin/feature_consumer"]   # pick this binary from the shared image
+          envFrom:
+            - configMapRef: { name: ids-config }          # KAFKA_BROKERS etc.
+          ports:
+            - containerPort: 9102                          # /metrics

@@ -315,32 +315,43 @@ with `docker compose up -d`.
 | feature_consumer metrics | http://localhost:9102/metrics (while running) |
 | kafka-exporter (lag) | http://localhost:9308/metrics |
 
+> ⚠️ Paste-safety: interactive zsh does NOT treat `#` as a comment — an inline
+> `# ...` becomes arguments and errors. Either omit comments when pasting, or run
+> `setopt interactive_comments` once. Also: run START and STOP blocks
+> **separately** — pasting them together runs the stop immediately and kills the
+> services before any traffic flows.
+
 ### See metrics for a single run
+Start a service (it serves `/metrics` while running):
 ```bash
-# 1. start a service (exposes /metrics while it runs)
-KAFKA_BROKERS=localhost:9092 ./cpp/build/inference_server      # serves :9103
-# 2. view raw metrics
-curl -s localhost:9103/metrics | grep ids_
-# 3. query via Prometheus
-curl -s 'localhost:9090/api/v1/query?query=ids_scored_total'
-# 4. stop it
-pkill -INT inference_server
+KAFKA_BROKERS=localhost:9092 ./cpp/build/inference_server
 ```
+In another terminal, view and query the metrics:
+```bash
+curl -s localhost:9103/metrics | grep ids_
+curl -s 'localhost:9090/api/v1/query?query=ids_scored_total'
+```
+Stop it with Ctrl-C, or: `pkill -INT inference_server`
 
 ### See LIVE graphs (continuous traffic)
-`rate()` / percentiles need ongoing traffic, so run the pipeline in a replay loop:
+`rate()` / percentiles need ongoing traffic. **START** (services + a replay loop,
+all backgrounded):
 ```bash
 B=localhost:9092
-docker exec redis redis-cli FLUSHALL                              # fresh dedup
-KAFKA_BROKERS=$B ./cpp/build/feature_consumer &                   # :9102
-KAFKA_BROKERS=$B ./cpp/build/inference_server &                   # :9103
+docker exec redis redis-cli FLUSHALL
+KAFKA_BROKERS=$B ./cpp/build/feature_consumer &
+KAFKA_BROKERS=$B ./cpp/build/inference_server &
 for i in $(seq 1 30); do KAFKA_BROKERS=$B ./cpp/build/flow_extractor data/1.pcap >/dev/null 2>&1; done &
-# open http://localhost:3000/d/ids-pipeline and watch the panels move
-# stop everything when done:
-pkill -INT feature_consumer inference_server flow_extractor
+```
+Open http://localhost:3000/d/ids-pipeline and watch the panels move. **STOP**
+later (run as a separate step, one pattern per call):
+```bash
+pkill -INT flow_extractor
+pkill -INT inference_server
+pkill -INT feature_consumer
 ```
 Reference live values seen: ~7k flows/s, p99 latency ~34µs, alert fire/suppress
-oscillating with the 60s dedup window.
+oscillating with the 60s dedup window (flush Redis first to see `fired/s` spike).
 
 ### Useful PromQL
 ```promql
@@ -355,6 +366,46 @@ Changing a provisioned datasource's `uid` conflicts with Grafana's stored copy.
 Recreate the container (it has no volume, so this resets its DB cleanly):
 ```bash
 docker compose -f infra/docker-compose.yml up -d --force-recreate grafana
+```
+
+## Kubernetes (Phase 5)
+
+### Build the container image
+One consolidated multi-stage image holds all core binaries (built for Linux) +
+the ONNX model. Requires Docker; the first build is slow (vcpkg from source).
+```bash
+docker build -f Dockerfile -t ids:dev .          # ~15-20 min first time
+docker images ids:dev                             # ~223 MB
+```
+Sanity-check a binary in the container (Kafka will refuse against compose-Kafka
+due to its localhost advertised listener — that's expected; it works in-cluster):
+```bash
+docker run --rm -e REDIS_HOST=host.docker.internal ids:dev /usr/local/bin/inference_server
+# look for: "inference_server: ... (model /models/xgboost_intrusion.onnx, threshold 0.69, dedup on)"
+docker run --rm --entrypoint ldd ids:dev /usr/local/bin/inference_server | grep "not found" || echo "libs ok"
+```
+
+### Deploy to a local cluster (kind + Helm + KEDA)
+```bash
+kind create cluster --name ids
+kind load docker-image ids:dev --name ids                 # load local image into the cluster
+helm repo add kedacore https://kedacore.github.io/charts && helm repo update
+helm install keda kedacore/keda -n keda --create-namespace --wait
+helm install ids infra/helm/ids                            # kafka, redis, services, ScaledObject
+kubectl get pods                                           # all should reach Running
+```
+Observe / autoscaling:
+```bash
+kubectl get scaledobject,hpa                               # KEDA + HPA
+kubectl get deploy inference-server -w                     # watch replica count
+KPOD=$(kubectl get pod -l app=kafka -o jsonpath='{.items[0].metadata.name}')
+kubectl exec $KPOD -- /opt/kafka/bin/kafka-consumer-groups.sh \
+  --bootstrap-server localhost:9092 --describe --group inference-server   # ground-truth lag
+```
+Note: KEDA verifiably scales inference 0→1 on lag; a clean 1→10 ramp is an open
+follow-up (consumer too fast + a KEDA scaler lag-report quirk in kind). Teardown:
+```bash
+helm uninstall ids; helm uninstall keda -n keda; kind delete cluster --name ids
 ```
 
 ## Shutting down & resuming (e.g. rebooting your Mac)

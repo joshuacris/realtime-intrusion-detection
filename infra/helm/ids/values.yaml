@@ -1,0 +1,26 @@
+# Our consolidated app image (loaded into kind locally; never pulled from a registry).
+image:
+  repository: ids
+  tag: dev
+  pullPolicy: IfNotPresent     # use the locally-loaded image, don't pull
+
+# In-cluster infrastructure (single-node, dev-grade).
+kafka:
+  image: apache/kafka:3.8.1
+redis:
+  image: redis:7-alpine
+
+# Our services (replica counts; inference_server gets autoscaled by KEDA below).
+featureConsumer:
+  replicas: 1
+inferenceServer:
+  replicas: 1
+
+# KEDA autoscaling for inference-server, driven by Kafka consumer-group lag.
+# Requires KEDA installed in the cluster (see 5.4). Disable to deploy without it.
+keda:
+  enabled: true
+  minReplicas: 0            # scale to ZERO when idle -> 0→N demo when lag appears
+  maxReplicas: 10
+  lagThreshold: "1000"      # ~target lag per replica; total lag/threshold ≈ desired replicas
+  pollingInterval: 5        # how often KEDA samples lag (seconds)

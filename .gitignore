@@ -42,3 +42,4 @@ ACHIEVEMENTS.md
 PLAN.md
 # generated gRPC python stubs
 scripts/gen/
+.claude/

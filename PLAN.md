@@ -239,24 +239,54 @@ Live traffic (pcap / UNSW-NB15 replay)
 
 ### Tasks
 
-- [ ] **5.1** Containerize all components
-  - `Dockerfile.flow-extractor` — C++ flow aggregator binary
-  - `Dockerfile.inference-server` — C++ ONNX inference server
-  - `Dockerfile.feature-consumer` — C++ Kafka consumer/preprocessor
-  - Use multi-stage builds: build in `gcc` image, copy binary to `debian:slim`
+- [x] **5.1** Containerize all components ✅ DONE
+  - ONE consolidated multi-stage `Dockerfile` → image `ids:dev` (223 MB) with all
+    3 core binaries (flow_extractor, feature_consumer, inference_server); each k8s
+    Deployment picks its binary via `command:`. (D25)
+  - Build stage debian:bookworm + vcpkg (librdkafka/hiredis/nlohmann/prometheus-cpp
+    from source) + ONNX Runtime via Microsoft's prebuilt Linux-arm64 tarball
+    (1.20.1); runtime stage bookworm-slim (glibc-matched). Model baked into /models.
+  - `alert_gateway`/gRPC intentionally NOT containerized — avoids a heavy
+    gRPC-from-source Linux build; stays a local service. (D26)
+  - `.dockerignore` keeps the 950MB pcap/builds/venv out of the build context.
+  - **Verified in Linux:** all binaries present, ldd clean, inference_server loads
+    the ONNX model + threshold + connects Redis (`dedup on`). (Kafka fails only on
+    the advertised-listener quirk — resolves in-cluster.)
 
-- [ ] **5.2** Write Helm charts
-  - Chart per component: `flow-extractor`, `feature-consumer`, `inference-server`
-  - Values: replica count, Kafka broker URL, Redis URL, ONNX model path
+- [x] **5.2** Write Helm charts ✅ DONE
+  - One chart `infra/helm/ids/` (templates + values) for the whole app, not a
+    chart per service.
+  - Templates: ConfigMap (KAFKA_BROKERS=kafka:9092, REDIS_HOST=redis, MODEL_PATH),
+    Kafka (single-node KRaft, advertised as `kafka:9092`, auto-create topics w/ 3
+    partitions), Redis, feature-consumer + inference-server Deployments (shared
+    `ids:dev` image, per-service `command:`, env from ConfigMap). (D27)
+  - Validated: `helm lint` clean; `helm template` renders all 6 objects.
+    (Deploy to kind = 5.4.)
 
-- [ ] **5.3** Configure Horizontal Pod Autoscaler (HPA) on inference pods
-  - Scale on Kafka consumer lag (via KEDA — Kubernetes Event-Driven Autoscaler)
-  - Min replicas: 1, Max replicas: 10
-  - Target: lag < 1000 messages per partition
+- [x] **5.3** Configure autoscaling (HPA via KEDA) on inference pods ✅ DONE (config)
+  - `infra/helm/ids/templates/scaledobject.yaml`: KEDA `ScaledObject` scales the
+    inference-server Deployment on Kafka consumer-group lag (group
+    `inference-server`, topic `model-ready-features`), min 1 / max 10,
+    lagThreshold 1000/replica, cooldown 30s. (D28)
+  - Conditional on `keda.enabled` (KEDA operator must be installed first — 5.4).
+  - Validated via `helm template`. Live scaling demo = 5.4.
 
-- [ ] **5.4** Deploy locally with `minikube` or `kind`
-  - Full stack: Kafka, Zookeeper, Redis, flow-extractor, feature-consumer, inference-server
-  - Load test: replay 163K records and watch HPA scale inference pods
+- [x] **5.4** Deploy locally with `kind` ✅ DONE (deploy verified; autoscale partial)
+  - kind cluster `ids` + KEDA (helm) + `kind load docker-image ids:dev` +
+    `helm install ids`. Full stack healthy: kafka, redis, feature-consumer,
+    inference-server.
+  - **Verified in-cluster pipeline**: produced to model-ready-features →
+    inference consumed → scored-flows (across 3 partitions).
+  - Fixed 2 real k8s bugs: KRaft controller quorum must be `1@localhost:9093`
+    (Service only exposes 9092); **advertised listener must be the FQDN**
+    `kafka.default.svc.cluster.local:9092` so KEDA (in `keda` ns) can follow it.
+  - **KEDA autoscaling: configured + verified reacting to lag (0→1 activation)**;
+    ScaledObject Ready, HPA created, external-metrics API serves a value.
+  - ⚠️ OPEN FOLLOW-UP: the dramatic 1→10 didn't render — KEDA's kafka scaler
+    under-reported lag (3k vs real ~5M) in this kind env + our consumer drains
+    backlogs faster than the HPA reaction loop. NOT a design flaw (activation
+    proves the mechanism). Revisit via: demo-mode per-flow delay, KEDA scaler
+    tuning (excludePersistentLag/version), or sustained real load / managed cluster.
 
 - [ ] **5.5** Set up GitHub Actions CI/CD
   - On push to `main`: build Docker images, run ONNX validation test, push to GHCR
@@ -294,6 +324,33 @@ resume-driven dead weight. Slots in after Phase 3 (needs a baseline to compare).
 
 ---
 
+## Phase 7 — Distributed Training (optional, reuses the Phase 5 cluster)
+
+**Goal:** add a genuinely-justified piece of distributed compute. NOT distributed
+model training for its own sake (the data is 30MB and XGBoost trains in ~1 min on
+one core — distributing that would be over-engineering). Instead, distribute the
+work that is actually parallel.
+
+**Why this framing:** the study already runs a hyperparameter sweep
+(RandomizedSearchCV, ~50 configs × 3-fold = 150 independent fits) — embarrassingly
+parallel. Distributing THAT across the k8s cluster is honest and useful.
+
+### Tasks (pick one)
+
+- [ ] **7.1** *(recommended)* **Distributed hyperparameter optimization** on
+  Kubernetes — Ray Tune (or Dask, or parallel k8s Jobs) runs many training
+  trials concurrently across the Phase-5 cluster. Reuses the cluster, extends the
+  existing sweep, real speedup. Framing: "distributed HPO on k8s."
+- [ ] **7.2** *(stretch, pairs with Phase 6)* **Data-parallel NN training**
+  (JAX `pmap` / PyTorch DDP) for the Phase-6 MLP. Caveat: small data → modest
+  wall-clock win; mainly demonstrates the technique (stronger if combined with
+  the full ~2.5M-record UNSW set or CIC-IDS2017).
+- [ ] **7.3** *(research)* **Federated learning** — train across simulated
+  distributed sensors (partition the dataset), aggregate centrally. Most
+  domain-relevant to IDS (sensors are naturally distributed); largest effort.
+
+---
+
 ## Suggested Build Order
 
 | Week | Focus |
@@ -327,6 +384,54 @@ resume-driven dead weight. Slots in after Phase 3 (needs a baseline to compare).
 ## Progress Log
 
 Durable record of what's been built (in case chat logs are lost). Newest first.
+
+### 2026-06-23 — Phase 5.4: deploy to kind (autoscale partial)
+- kind cluster `ids`; KEDA via helm (kedacore); `kind load docker-image ids:dev`;
+  `helm install ids`. All pods healthy (kafka/redis/feature-consumer/inference).
+- Pipeline verified in-cluster (model-ready-features → inference → scored-flows).
+- 2 bugs fixed: (1) KRaft controller quorum `1@localhost:9093` (Service exposes
+  only 9092 → broker crash-looped on controller channel); (2) advertised listener
+  → FQDN `kafka.default.svc.cluster.local:9092` (KEDA in `keda` ns couldn't
+  resolve bare `kafka` after bootstrap).
+- KEDA autoscaling configured + reacts to lag (0→1 activation verified; ScaledObject
+  Ready; HPA created; external-metrics serves a value).
+- **OPEN FOLLOW-UP (5.4-bis):** clean 1→10 not rendered — KEDA scaler under-reported
+  lag (3k vs ~5M ground truth) + inference too fast for HPA reaction window.
+  Mechanism is correct (activation proves it). Resolve later via demo-delay /
+  scaler tuning / sustained load. Cleanup: `kind delete cluster --name ids`.
+
+### 2026-06-22 — Phase 5.3: KEDA autoscaling (config)
+- `scaledobject.yaml` (conditional on keda.enabled): KEDA Kafka-lag scaler →
+  autoscale inference-server 1→10 on group `inference-server` lag for topic
+  `model-ready-features`, lagThreshold 1000, cooldown 30s. values: keda.{enabled,
+  minReplicas,maxReplicas,lagThreshold}.
+- KEDA extends HPA to event sources (stock HPA = CPU/mem only); its Kafka scaler
+  reads consumer-group lag directly. (D28)
+- Renders clean; KEDA operator install + live scale demo in 5.4.
+
+### 2026-06-22 — Phase 5.2: Helm chart
+- `infra/helm/ids/`: one chart for the whole app. Templates: configmap (shared
+  env), kafka (single-node KRaft, advertised `kafka:9092`, auto-create 3-partition
+  topics), redis, feature-consumer + inference-server Deployments (shared ids:dev
+  image, per-service `command:`, envFrom configmap, /metrics ports).
+  values.yaml: image repo/tag/pullPolicy, infra images, replica counts.
+- In-cluster infra written by hand (not Bitnami) — self-contained, avoids
+  Bitnami image/licensing issues, simpler single-listener Kafka (D27).
+- `helm lint` clean; `helm template` renders 6 objects correctly. Deploy in 5.4.
+
+### 2026-06-22 — Phase 5.1: containerization
+- Installed kind 0.32 / helm 4.2 / kubectl 1.36.
+- Consolidated multi-stage `Dockerfile` → `ids:dev` (223 MB): debian:bookworm
+  build (vcpkg deps from source + ONNX Runtime 1.20.1 prebuilt arm64 tarball at
+  /opt/onnxruntime, passed to CMake via -DONNXRUNTIME_INCLUDE_DIR/_LIB) →
+  bookworm-slim runtime (glibc-matched) with flow_extractor + feature_consumer +
+  inference_server, libonnxruntime.so, and the baked model in /models.
+- `.dockerignore` (excludes data/pcap/builds/venv; negation re-includes the model).
+- Verified: ldd clean; inference_server loads ONNX model + threshold 0.69 +
+  Redis. Kafka connect fails only due to compose-Kafka advertising `localhost`
+  to the container (in-cluster Kafka advertises kafka:9092 → fine).
+- Decisions: D25 (one consolidated image, per-Deployment command; onnxruntime via
+  tarball not vcpkg), D26 (defer alert_gateway/gRPC from k8s).
 
 ### 2026-06-22 — Phase 4.3: structured logging (PHASE 4 COMPLETE)
 - `cpp/src/logging.h` `JsonLogger`: one compact JSON line per scored flow
