@@ -5,6 +5,117 @@ Build, run, and operate the real-time intrusion detection pipeline locally.
 
 ---
 
+## TL;DR — run the whole pipeline live
+
+The fastest way to see the project actually working: bring up infra, build, then
+start the full chain (flow extractor → Kafka → feature consumer → ONNX inference)
+with continuous traffic, and watch it on the Grafana dashboard.
+
+> This is the **showcase path**, not every command in this doc. Most other
+> sections are alternatives (file output vs Kafka, Debug vs Release, gRPC stream,
+> Kubernetes deploy, benchmarks) — you don't need them just to see it run.
+
+**1. One-time prep** (skip anything you've already done):
+```bash
+# infra: Kafka, Redis, Prometheus, Grafana, kafka-exporter
+docker compose -f infra/docker-compose.yml up -d
+bash infra/create-topics.sh
+
+# release build (the optimized binaries used for real runs)
+cmake -B cpp/build-release -S cpp \
+  -DCMAKE_TOOLCHAIN_FILE=$VCPKG_ROOT/scripts/buildsystems/vcpkg.cmake \
+  -DCMAKE_BUILD_TYPE=Release
+cmake --build cpp/build-release
+
+# model must exist (only if models/xgboost_intrusion.onnx is missing)
+.venv/bin/python scripts/export_onnx.py
+```
+
+**2. Start the live load** — the two consumers plus a pcap-replay loop, all
+backgrounded. Two options:
+
+*Option A — fixed burst* (~30 passes, a couple of minutes, then it stops):
+```bash
+B=localhost:9092
+docker exec redis redis-cli FLUSHALL
+KAFKA_BROKERS=$B ./cpp/build-release/feature_consumer &
+KAFKA_BROKERS=$B ./cpp/build-release/inference_server &
+for i in $(seq 1 30); do KAFKA_BROKERS=$B ./cpp/build-release/flow_extractor data/1.pcap >/dev/null 2>&1; done &
+```
+
+*Option B — runs forever until you stop it* (best for taking screenshots; flushes
+Redis every 6 passes so the alert panel shows a recurring fired-vs-suppressed
+sawtooth instead of an all-suppressed flatline):
+```bash
+B=localhost:9092
+rm -f /tmp/ids_demo_stop
+docker exec redis redis-cli FLUSHALL
+KAFKA_BROKERS=$B ./cpp/build-release/feature_consumer &
+KAFKA_BROKERS=$B ./cpp/build-release/inference_server &
+( i=0; while [ ! -f /tmp/ids_demo_stop ]; do
+    i=$((i+1))
+    KAFKA_BROKERS=$B ./cpp/build-release/flow_extractor data/1.pcap >/dev/null 2>&1
+    [ $((i % 6)) -eq 0 ] && docker exec redis redis-cli FLUSHALL >/dev/null 2>&1
+  done ) &
+```
+
+**3. Watch it:** open **http://localhost:3000/d/ids-pipeline**, set the time range
+to *Last 15 minutes* and refresh to *5s*. The panels (throughput, p50/p99
+latency, alerts fired/suppressed, Kafka lag) will move.
+
+**4. Stop** — run this **separately** from the START block (don't paste both
+together, or you'll kill the services before any traffic flows):
+```bash
+touch /tmp/ids_demo_stop 2>/dev/null   # ends the Option-B while-loop
+pkill -INT -f build-release/feature_consumer
+pkill -INT -f build-release/inference_server
+```
+
+> ⚠️ **Paste-safety (zsh):** interactive zsh does *not* treat `#` as a comment —
+> a pasted inline `# ...` becomes arguments and errors. Run
+> `setopt interactive_comments` once, or omit the comments when pasting.
+
+### Using your own pcap file(s)
+
+`flow_extractor` takes any libpcap-format capture (`.pcap` / `.pcapng`) — the
+data path is identical, so just point it at your file instead of `data/1.pcap`:
+
+```bash
+# single file -> Kafka
+KAFKA_BROKERS=localhost:9092 ./cpp/build-release/flow_extractor /path/to/your.pcap
+
+# single file -> JSON Lines on disk (no Kafka needed; good for inspecting features)
+./cpp/build-release/flow_extractor /path/to/your.pcap out.jsonl
+
+# capture live traffic to a file first, then replay it (needs sudo for the NIC)
+sudo tcpdump -i en0 -w /tmp/live.pcap     # Ctrl-C to stop
+KAFKA_BROKERS=localhost:9092 ./cpp/build-release/flow_extractor /tmp/live.pcap
+```
+
+Process a whole directory of captures in one go — each file is one `flow_extractor`
+run; flows from all of them land on the same `raw-flows` topic and flow through
+the rest of the pipeline:
+```bash
+B=localhost:9092
+for f in /path/to/captures/*.pcap; do
+  echo "==> $f"
+  KAFKA_BROKERS=$B ./cpp/build-release/flow_extractor "$f"
+done
+```
+
+Notes:
+- The capture must be **libpcap format** (what `tcpdump -w` / Wireshark produce).
+  Other formats won't parse.
+- Features are computed **per flow within the run** (the `ct_*` connection-history
+  features use a rolling last-100-connections window), so a single combined
+  capture and several smaller ones can differ slightly at the boundaries — same
+  as any real streaming system.
+- The model was trained on UNSW-NB15; on traffic from a very different network its
+  scores are only as meaningful as that training distribution. The *pipeline*
+  runs on anything, but *predictions* assume similar feature semantics.
+
+---
+
 ## Prerequisites
 
 | Tool | Purpose | Install |
