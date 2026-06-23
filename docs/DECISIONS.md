@@ -295,6 +295,18 @@ generates the underlying HPA for us. This is the payoff that connects Phase 2
 (consumer groups), Phase 4 (the lag metric), and Phase 3 (stateless inference):
 backlog up → more pods → backlog drains → scale down.
 
+### D29 — CI scoped to lint + Linux-compile (not full image/ONNX test)
+**Chosen:** GitHub Actions CI runs `helm lint`/template + builds the Dockerfile's
+`build` stage (compiles all binaries for Linux, GHA-cached). No full-image push or
+ONNX parity test in CI.
+**Rationale:** the model (`models/`) and UNSW CSVs are gitignored, so they're not
+in a CI checkout — the runtime image's model `COPY` and the parity test can't run
+without committing them. Linting the chart + compiling the C++ for Linux are the
+high-value checks achievable with what's in the repo. Extending to GHCR push /
+deploy-on-tag (documented in the workflow) would require committing the model and
+adding cluster/registry secrets — deferred to keep the repo data-free and the CI
+runnable by anyone.
+
 ---
 
 ## Major Challenges & Resolutions

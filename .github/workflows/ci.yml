@@ -1,0 +1,48 @@
+name: CI
+
+# Run on pushes to main and on PRs.
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  # --- Validate the Helm chart renders/lints (fast, no build) ---
+  helm-lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: azure/setup-helm@v4
+      - name: helm lint
+        run: helm lint infra/helm/ids
+      - name: helm template (render check)
+        run: helm template ids infra/helm/ids > /dev/null
+
+  # --- Compile the C++ for Linux (the Dockerfile "build" stage). ---
+  # We target the build stage only: it compiles all binaries via vcpkg + ONNX
+  # Runtime, WITHOUT the runtime stage's model COPY (the model + CSVs are
+  # gitignored, so the full runtime image / ONNX parity test can't run in CI).
+  cpp-build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: docker/setup-buildx-action@v3
+      - name: Build C++ (Dockerfile build stage)
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: Dockerfile
+          target: build              # compile only; skip runtime/model COPY
+          push: false
+          cache-from: type=gha       # cache the slow vcpkg/deps build across runs
+          cache-to: type=gha,mode=max
+
+# --- To extend later (needs committed model + secrets/cluster) ---
+# * Push the full image to GHCR on main:
+#     add permissions: { packages: write }, docker/login-action to ghcr.io with
+#     ${{ secrets.GITHUB_TOKEN }}, target the runtime stage, push: true,
+#     tags: ghcr.io/${{ github.repository }}:${{ github.sha }}
+#     (requires committing models/xgboost_intrusion.onnx so the COPY succeeds).
+# * Run the ONNX parity test: needs the UNSW CSVs (currently gitignored).
+# * Deploy on tag: a `deploy` job gated on `startsWith(github.ref,'refs/tags/')`
+#     using a kubeconfig secret to `helm upgrade` a real cluster.
