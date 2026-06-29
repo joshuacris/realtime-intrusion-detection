@@ -152,7 +152,7 @@ pip install numpy pandas scikit-learn xgboost onnx onnxruntime onnxmltools skl2o
 .venv/bin/python scripts/export_onnx.py
 ```
 Writes `models/xgboost_intrusion.onnx`, `models/feature_order.json` (the 58-col
-contract — must match `cpp/src/feature_schema.h`), and `models/threshold.txt`.
+contract — must match `cpp/src/flow/feature_schema.hpp`), and `models/threshold.txt`.
 Validates 100% label parity vs native XGBoost before saving.
 
 ## Build the C++ flow extractor

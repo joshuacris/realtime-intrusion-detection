@@ -391,6 +391,33 @@ parallel. Distributing THAT across the k8s cluster is honest and useful.
 
 Durable record of what's been built (in case chat logs are lost). Newest first.
 
+### 2026-06-23 — modern-C++ refactor of the cpp/ tree
+
+Restructured the C++ codebase for idiomatic modern style (no behavior change).
+**Note:** file paths in earlier progress-log entries refer to the pre-refactor
+flat `cpp/src/*.h` layout; the current layout is below.
+
+- **Layout:** flat `cpp/src/` → component folders `cpp/src/{net,flow,messaging,
+  model,dedup,observability,alert}/` (headers + sources colocated), and the five
+  executables moved to `cpp/apps/` (`main.cpp` → `apps/flow_extractor.cpp`).
+  Includes are path-qualified, e.g. `#include "flow/aggregator.hpp"`.
+- **`.h` → `.hpp`** for every project header; updated all includes + the
+  `cpp/src/flow/feature_schema.hpp` reference in SETUP.md.
+- **`namespace ids`** wraps all library code; apps use `using namespace ids;`.
+  Pairs cleanly with the protobuf `package ids;` types.
+- **Brace initialization** applied where safe (construction, zero-init, default
+  members); deliberately kept `=` where braces would narrow (`uint8_t = int-expr`)
+  or hit the `std::vector`/`nlohmann::json` initializer-list trap.
+- **CMake:** new `ids_common` INTERFACE library carries the `src/` include root;
+  all five targets updated to the new source paths. Dockerfile now also
+  `COPY cpp/apps ./apps`. Target/binary names unchanged, so all run commands +
+  the container build still work.
+- **Comments:** removed the line-by-line teaching narration, kept only short
+  *why* notes. See docs/CPP_TAKEAWAYS.md "Modernization pass" for the lessons.
+- **Validated:** clean Release build of all 5 targets; parse path byte-exact
+  (1,800,166 pkts / 23,004 flows); ONNX scoring works; full Kafka pipeline runs
+  end-to-end with errors 0 and identical dedup (79 unique Redis keys).
+
 ### 2026-06-23 — final benchmark pass + README + dashboard capture
 - **Authoritative benchmarks** (single core, Apple Silicon, Release `-O3`,
   best-of-3, each stage isolated), recorded in `docs/ACHIEVEMENTS.md` and the

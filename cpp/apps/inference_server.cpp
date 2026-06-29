@@ -1,9 +1,9 @@
-#include "kafka_consumer.h"
-#include "kafka_producer.h"
-#include "onnx_model.h"
-#include "redis_dedup.h"
-#include "metrics.h"
-#include "logging.h"
+#include "messaging/kafka_consumer.hpp"
+#include "messaging/kafka_producer.hpp"
+#include "model/onnx_model.hpp"
+#include "dedup/redis_dedup.hpp"
+#include "observability/metrics.hpp"
+#include "observability/logging.hpp"
 
 #include <prometheus/counter.h>
 #include <prometheus/histogram.h>
@@ -16,55 +16,55 @@
 #include <fstream>
 #include <vector>
 
+using namespace ids;
+
 static std::atomic<bool> g_running{true};
 static void handle_signal(int) { g_running = false; }
 
 // Decision threshold: env THRESHOLD > models/threshold.txt > default 0.69.
 static double load_threshold() {
     if (const char* e = std::getenv("THRESHOLD")) return std::atof(e);
-    std::ifstream f("models/threshold.txt");
+    std::ifstream f{"models/threshold.txt"};
     double t;
     if (f >> t) return t;
     return 0.69;
 }
 
 int main() {
-    const char* be = std::getenv("KAFKA_BROKERS");
-    const std::string brokers = be ? be : "localhost:9092";
-    const char* mp = std::getenv("MODEL_PATH");
-    const std::string model_path = mp ? mp : "models/xgboost_intrusion.onnx";
-    const double threshold = load_threshold();
+    const char* be{std::getenv("KAFKA_BROKERS")};
+    const std::string brokers{be ? be : "localhost:9092"};
+    const char* mp{std::getenv("MODEL_PATH")};
+    const std::string model_path{mp ? mp : "models/xgboost_intrusion.onnx"};
+    const double threshold{load_threshold()};
 
     std::signal(SIGINT,  handle_signal);
     std::signal(SIGTERM, handle_signal);
 
-    // Redis dedup config (12-factor env, default localhost:6379, 60s window).
-    const char* rh = std::getenv("REDIS_HOST");
-    const std::string redis_host = rh ? rh : "localhost";
-    const int redis_port = std::getenv("REDIS_PORT")
-                         ? std::atoi(std::getenv("REDIS_PORT")) : 6379;
+    const char* rh{std::getenv("REDIS_HOST")};
+    const std::string redis_host{rh ? rh : "localhost"};
+    const int redis_port{std::getenv("REDIS_PORT")
+                         ? std::atoi(std::getenv("REDIS_PORT")) : 6379};
 
-    OnnxModel model(model_path);
-    KafkaConsumer consumer(brokers, "inference-server", "model-ready-features");
-    KafkaProducer producer(brokers, "scored-flows");
-    RedisDedup dedup(redis_host, redis_port, 60 /* seconds */);
+    OnnxModel model{model_path};
+    KafkaConsumer consumer{brokers, "inference-server", "model-ready-features"};
+    KafkaProducer producer{brokers, "scored-flows"};
+    RedisDedup dedup{redis_host, redis_port, 60};
     printf("inference_server: model-ready-features -> scored-flows "
            "(model %s, threshold %.2f, dedup %s)\n",
            model_path.c_str(), threshold,
            dedup.enabled() ? "on" : "OFF (redis unavailable, fail-open)");
 
-    constexpr std::size_t BATCH = 64;
-    std::vector<float> feats;              // flat [count*58] feature buffer
-    std::vector<nlohmann::json> metas;     // per-row 5-tuple metadata
+    constexpr std::size_t BATCH{64};
+    std::vector<float> feats;            // flat [count*58] feature buffer
+    std::vector<nlohmann::json> metas;   // per-row 5-tuple metadata
     feats.reserve(BATCH * OnnxModel::FEATURES);
     metas.reserve(BATCH);
 
-    long processed = 0, alerts = 0, fired = 0, suppressed = 0, errors = 0;
+    long processed{0}, alerts{0}, fired{0}, suppressed{0}, errors{0};
 
-    JsonLogger logger;   // structured per-flow log (LOG_FILE or stderr)
+    JsonLogger logger;
 
-    // ---- Prometheus metrics (served at :9103/metrics) ----
-    Metrics metrics("0.0.0.0:9103");
+    Metrics metrics{"0.0.0.0:9103"};
     auto& scored_total = prometheus::BuildCounter()
         .Name("ids_scored_total").Help("flows scored")
         .Register(*metrics.registry).Add({});
@@ -83,43 +83,41 @@ int main() {
     // Score the accumulated batch, publish a verdict per row, then clear.
     auto flush = [&]() {
         if (metas.empty()) return;
-        const std::size_t n = metas.size();
+        const std::size_t n{metas.size()};
 
-        auto t0 = std::chrono::steady_clock::now();
-        std::vector<float> probs = model.predict(feats, n);
-        auto t1 = std::chrono::steady_clock::now();
-        long per_us = std::chrono::duration_cast<std::chrono::microseconds>(
-                          t1 - t0).count() / static_cast<long>(n);
+        const auto t0 = std::chrono::steady_clock::now();
+        const std::vector<float> probs = model.predict(feats, n);
+        const auto t1 = std::chrono::steady_clock::now();
+        const long per_us{std::chrono::duration_cast<std::chrono::microseconds>(
+                              t1 - t0).count() / static_cast<long>(n)};
 
         for (std::size_t i = 0; i < n; ++i) {
-            const int label = probs[i] >= threshold ? 1 : 0;
-            nlohmann::json& m = metas[i];
+            const int label{probs[i] >= threshold ? 1 : 0};
+            nlohmann::json& m{metas[i]};
 
-            // For attacks, dedup on (src,dst,proto): first in the 60s window
-            // fires (alert=true); repeats are suppressed (alert=false).
-            bool alert = false;
+            // Attacks dedup on (src,dst,proto): first in the 60s window fires,
+            // repeats are suppressed.
+            bool alert{false};
             if (label == 1) {
                 alerts++;
-                const std::string key = "alert:" + m.value("srcip", std::string(""))
+                const std::string key{"alert:" + m.value("srcip", std::string(""))
                                       + ":" + m.value("dstip", std::string(""))
-                                      + ":" + m.value("proto", std::string(""));
+                                      + ":" + m.value("proto", std::string(""))};
                 alert = dedup.is_new_alert(key);
                 if (alert) fired++; else suppressed++;
             }
 
             m["attack_prob"] = probs[i];
             m["label"]       = label;
-            m["alert"]       = alert;   // true only for NOVEL attacks (post-dedup)
+            m["alert"]       = alert;
             m["latency_us"]  = per_us;
             producer.send(m.value("srcip", std::string("")), m.dump());
             processed++;
 
-            // metrics: bump counters + record latency (seconds) per flow
             scored_total.Increment();
             latency.Observe(per_us / 1e6);
             if (label == 1) (alert ? fired_total : suppressed_total).Increment();
 
-            // structured log line per scored flow (greppable / jq-able)
             logger.log({
                 {"flow_id", m.value("srcip", std::string("")) + ":"
                           + std::to_string(m.value("sport", 0)) + "->"
@@ -168,7 +166,7 @@ int main() {
            "(fired %ld, suppressed %ld by dedup), errors %ld\n",
            processed, alerts, fired, suppressed, errors);
     printf("kafka delivered: %llu  failed: %llu\n",
-           (unsigned long long)producer.delivered(),
-           (unsigned long long)producer.failed());
+           static_cast<unsigned long long>(producer.delivered()),
+           static_cast<unsigned long long>(producer.failed()));
     return 0;
 }

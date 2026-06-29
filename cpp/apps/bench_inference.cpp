@@ -1,11 +1,8 @@
 // Standalone inference benchmark — isolates ONNX Run() from the Kafka path.
-//
 // Usage: bench_inference [model.onnx] [batch] [iters] [features.jsonl]
-//   features.jsonl: optional file of {"features":[...58...]} lines (real inputs);
-//   if omitted, a single synthetic vector is used.
-//
-// Reports throughput (flows/sec) and per-batch / per-flow latency percentiles.
-#include "onnx_model.h"
+//   features.jsonl: optional {"features":[...58...]} lines of real inputs;
+//   omitted -> one synthetic vector. Reports throughput + latency percentiles.
+#include "model/onnx_model.hpp"
 
 #include <nlohmann/json.hpp>
 #include <algorithm>
@@ -16,18 +13,20 @@
 #include <string>
 #include <vector>
 
-int main(int argc, char** argv) {
-    const std::string model = argc > 1 ? argv[1] : "models/xgboost_intrusion.onnx";
-    const std::size_t batch = argc > 2 ? std::strtoul(argv[2], nullptr, 10) : 64;
-    const std::size_t iters = argc > 3 ? std::strtoul(argv[3], nullptr, 10) : 5000;
-    const std::string feat_file = argc > 4 ? argv[4] : "";
+using namespace ids;
 
-    OnnxModel m(model);
+int main(int argc, char** argv) {
+    const std::string model{argc > 1 ? argv[1] : "models/xgboost_intrusion.onnx"};
+    const std::size_t batch{argc > 2 ? std::strtoul(argv[2], nullptr, 10) : 64};
+    const std::size_t iters{argc > 3 ? std::strtoul(argv[3], nullptr, 10) : 5000};
+    const std::string feat_file{argc > 4 ? argv[4] : ""};
+
+    OnnxModel m{model};
 
     // Pool of real feature vectors (cycled to fill batches).
     std::vector<std::vector<float>> pool;
     if (!feat_file.empty()) {
-        std::ifstream f(feat_file);
+        std::ifstream f{feat_file};
         std::string line;
         while (std::getline(f, line)) {
             if (line.empty()) continue;
@@ -53,8 +52,7 @@ int main(int argc, char** argv) {
     auto fill = [&](std::size_t start) {
         for (std::size_t i = 0; i < batch; ++i) {
             const auto& v = pool[(start + i) % pool.size()];
-            std::copy(v.begin(), v.end(),
-                      flat.begin() + i * OnnxModel::FEATURES);
+            std::copy(v.begin(), v.end(), flat.begin() + i * OnnxModel::FEATURES);
         }
     };
 
@@ -63,20 +61,20 @@ int main(int argc, char** argv) {
 
     std::vector<long> lat;
     lat.reserve(iters);
-    auto t0 = std::chrono::steady_clock::now();
+    const auto t0 = std::chrono::steady_clock::now();
     for (std::size_t it = 0; it < iters; ++it) {
-        fill(it * batch);                      // refresh inputs OUTSIDE timing
-        auto a = std::chrono::steady_clock::now();
+        fill(it * batch);                      // refresh inputs outside timing
+        const auto a = std::chrono::steady_clock::now();
         auto out = m.predict(flat, batch);
-        auto b = std::chrono::steady_clock::now();
+        const auto b = std::chrono::steady_clock::now();
         lat.push_back(std::chrono::duration_cast<std::chrono::microseconds>(
                           b - a).count());
         if (out.empty()) return 1;             // stop the optimizer eliding the call
     }
-    auto t1 = std::chrono::steady_clock::now();
+    const auto t1 = std::chrono::steady_clock::now();
 
-    const double total_s = std::chrono::duration<double>(t1 - t0).count();
-    const std::size_t flows = batch * iters;
+    const double total_s{std::chrono::duration<double>(t1 - t0).count()};
+    const std::size_t flows{batch * iters};
     std::sort(lat.begin(), lat.end());
     auto pct = [&](double p) { return lat[static_cast<std::size_t>(p * (lat.size() - 1))]; };
 

@@ -42,6 +42,7 @@ WORKDIR /app/cpp
 COPY cpp/vcpkg.json ./
 COPY cpp/CMakeLists.txt ./
 COPY cpp/src ./src
+COPY cpp/apps ./apps
 COPY cpp/proto ./proto
 
 # Point CMake at the ONNX Runtime tarball (pre-sets the cache vars our
